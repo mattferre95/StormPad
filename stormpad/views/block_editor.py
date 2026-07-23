@@ -15,10 +15,13 @@ from AppKit import (
     NSAlert,
     NSAttributedString,
     NSBackgroundColorAttributeName,
+    NSBezierPath,
     NSBoldFontMask,
     NSButton,
     NSColor,
+    NSDraggingItem,
     NSDragOperationCopy,
+    NSDragOperationMove,
     NSEventModifierFlagOption,
     NSFilenamesPboardType,
     NSFont,
@@ -35,12 +38,18 @@ from AppKit import (
     NSMutableParagraphStyle,
     NSNoBorder,
     NSParagraphStyleAttributeName,
+    NSPasteboardItem,
     NSScrollerStyleOverlay,
     NSScrollView,
     NSTextAttachment,
     NSTextField,
     NSTextView,
     NSTimer,
+    NSTrackingActiveInKeyWindow,
+    NSTrackingArea,
+    NSTrackingInVisibleRect,
+    NSTrackingMouseEnteredAndExited,
+    NSTrackingMouseMoved,
     NSUnderlineStyleAttributeName,
     NSUnderlineStyleSingle,
     NSViewHeightSizable,
@@ -59,25 +68,28 @@ from ..blocks import (
     InlineMark,
     InlineRun,
     MarkType,
+    apply_block_command,
     backspace_empty_result,
-    convert_block,
     empty_return_result,
     insert_block,
-    move_block,
     next_block_after_return,
+    reorder_blocks,
     split_runs,
     toggle_todo,
 )
-from ..models import Note
+from ..models import Note, move_transcript_chunk, remove_transcript_chunk
 from ..uihelpers import (
     SaveStatus,
-    add_block_menu_mode,
+    block_gutter_canvas_y,
+    block_gutter_layout,
+    block_index_for_location,
     formatting_toolbar_visible,
+    gutter_hover_hit,
     title_command_focus,
     title_display_text,
 )
-from .controls import label, rounded_view, solid_view
-from .layout import add, pin_edges, set_height
+from .controls import FlippedView, label, rounded_view, solid_view
+from .layout import add, pin_edges, set_height, set_width
 from .palette import Palette, serif_font, symbol_image
 
 _ATTR_BLOCK = "StormPadBlockType"
@@ -95,7 +107,10 @@ _ATTR_TEXT_COLOR = "StormPadTextColor"
 _ATTR_HIGHLIGHT = "StormPadHighlight"
 _ATTR_LINK = "StormPadLink"
 _ATTR_RAW = "StormPadRaw"
+_ATTR_TRANSCRIPT_CHUNK = "StormPadTranscriptChunk"
 _ZERO_WIDTH = "\u200b"
+_LINE_SEPARATOR = "\u2028"
+_BLOCK_DRAG_TYPE = "com.stormpad.block-index"
 
 _BODY_INSET = 92.0
 _BLOCK_MENU: tuple[tuple[str, BlockType, str], ...] = (
@@ -115,6 +130,133 @@ _BLOCK_MENU: tuple[tuple[str, BlockType, str], ...] = (
 )
 
 
+class EditorCanvas(FlippedView):
+    """Editor surface that reports hover motion across text and gutter."""
+
+    def init(self):
+        self = objc.super(EditorCanvas, self).init()
+        if self is None:
+            return None
+        self._tracking = None
+        self.stormpad_editor = None
+        return self
+
+    def updateTrackingAreas(self):  # noqa: N802
+        objc.super(EditorCanvas, self).updateTrackingAreas()
+        if self._tracking is not None:
+            self.removeTrackingArea_(self._tracking)
+        options = (
+            NSTrackingMouseMoved
+            | NSTrackingMouseEnteredAndExited
+            | NSTrackingActiveInKeyWindow
+            | NSTrackingInVisibleRect
+        )
+        self._tracking = NSTrackingArea.alloc().initWithRect_options_owner_userInfo_(
+            self.bounds(), options, self, None
+        )
+        self.addTrackingArea_(self._tracking)
+
+    def viewDidMoveToWindow(self):  # noqa: N802
+        objc.super(EditorCanvas, self).viewDidMoveToWindow()
+        if self.window() is not None:
+            self.window().setAcceptsMouseMovedEvents_(True)
+
+    def mouseMoved_(self, event):  # noqa: N802
+        if self.stormpad_editor is not None:
+            point = self.convertPoint_fromView_(event.locationInWindow(), None)
+            self.stormpad_editor.hover_canvas_point(point)
+
+    def mouseExited_(self, event):  # noqa: N802
+        if self.stormpad_editor is not None:
+            self.stormpad_editor.clear_block_hover()
+
+
+class GutterButton(NSButton):
+    """Theme-aware gutter button with a visible native hover state."""
+
+    def init(self):
+        self = objc.super(GutterButton, self).init()
+        if self is None:
+            return None
+        self._tracking = None
+        self.stormpad_idle_color = None
+        self.stormpad_hover_color = None
+        return self
+
+    def updateTrackingAreas(self):  # noqa: N802
+        objc.super(GutterButton, self).updateTrackingAreas()
+        if self._tracking is not None:
+            self.removeTrackingArea_(self._tracking)
+        options = (
+            NSTrackingMouseEnteredAndExited
+            | NSTrackingActiveInKeyWindow
+            | NSTrackingInVisibleRect
+        )
+        self._tracking = NSTrackingArea.alloc().initWithRect_options_owner_userInfo_(
+            self.bounds(), options, self, None
+        )
+        self.addTrackingArea_(self._tracking)
+
+    def mouseEntered_(self, event):  # noqa: N802
+        if self.stormpad_hover_color is not None:
+            self.layer().setBackgroundColor_(self.stormpad_hover_color.CGColor())
+
+    def mouseExited_(self, event):  # noqa: N802
+        if self.stormpad_idle_color is not None:
+            self.layer().setBackgroundColor_(self.stormpad_idle_color.CGColor())
+
+
+class BlockDragButton(GutterButton):
+    """Gutter handle that starts a native AppKit drag session."""
+
+    def mouseDown_(self, event):  # noqa: N802
+        editor = getattr(self, "stormpad_editor", None)
+        if editor is None or not editor.begin_block_drag(event, self):
+            objc.super(BlockDragButton, self).mouseDown_(event)
+
+
+class GutterHoverView(FlippedView):
+    """Transparent tracker covering only the reserved left block gutter."""
+
+    def init(self):
+        self = objc.super(GutterHoverView, self).init()
+        if self is None:
+            return None
+        self._tracking = None
+        self.stormpad_editor = None
+        return self
+
+    def updateTrackingAreas(self):  # noqa: N802
+        objc.super(GutterHoverView, self).updateTrackingAreas()
+        if self._tracking is not None:
+            self.removeTrackingArea_(self._tracking)
+        options = (
+            NSTrackingMouseMoved
+            | NSTrackingMouseEnteredAndExited
+            | NSTrackingActiveInKeyWindow
+            | NSTrackingInVisibleRect
+        )
+        self._tracking = NSTrackingArea.alloc().initWithRect_options_owner_userInfo_(
+            self.bounds(), options, self, None
+        )
+        self.addTrackingArea_(self._tracking)
+
+    def mouseMoved_(self, event):  # noqa: N802
+        if self.stormpad_editor is not None:
+            point = self.stormpad_editor.view.convertPoint_fromView_(
+                event.locationInWindow(), None
+            )
+            self.stormpad_editor.hover_canvas_point(point)
+
+    def mouseExited_(self, event):  # noqa: N802
+        if self.stormpad_editor is not None:
+            self.stormpad_editor.clear_block_hover()
+
+    def scrollWheel_(self, event):  # noqa: N802
+        if self.stormpad_editor is not None:
+            self.stormpad_editor._body.scrollWheel_(event)
+
+
 def _attr_value(attrs: dict, key: str, default=None):
     value = attrs.get(key)
     return default if value is None else value
@@ -130,13 +272,34 @@ class BlockTextView(NSTextView):
 
     def draggingEntered_(self, sender):  # noqa: N802
         pasteboard = sender.draggingPasteboard()
+        editor = getattr(self, "stormpad_editor", None)
+        if pasteboard.stringForType_(_BLOCK_DRAG_TYPE) is not None:
+            if editor is not None:
+                editor.update_block_drag_destination(sender)
+            return NSDragOperationMove
         files = pasteboard.propertyListForType_(NSFilenamesPboardType)
         return NSDragOperationCopy if files else 0
 
+    def draggingUpdated_(self, sender):  # noqa: N802
+        pasteboard = sender.draggingPasteboard()
+        if pasteboard.stringForType_(_BLOCK_DRAG_TYPE) is not None:
+            editor = getattr(self, "stormpad_editor", None)
+            if editor is not None:
+                editor.update_block_drag_destination(sender)
+            return NSDragOperationMove
+        return self.draggingEntered_(sender)
+
+    def draggingExited_(self, sender):  # noqa: N802
+        editor = getattr(self, "stormpad_editor", None)
+        if editor is not None:
+            editor.end_block_drag()
+
     def performDragOperation_(self, sender):  # noqa: N802
         pasteboard = sender.draggingPasteboard()
-        files = pasteboard.propertyListForType_(NSFilenamesPboardType) or []
         editor = getattr(self, "stormpad_editor", None)
+        if pasteboard.stringForType_(_BLOCK_DRAG_TYPE) is not None:
+            return bool(editor and editor.perform_block_drop(sender))
+        files = pasteboard.propertyListForType_(NSFilenamesPboardType) or []
         return bool(editor and editor.handle_dropped_files([Path(str(item)) for item in files]))
 
     def mouseDown_(self, event):  # noqa: N802
@@ -148,6 +311,14 @@ class BlockTextView(NSTextView):
                 attrs = self.textStorage().attributesAtIndex_effectiveRange_(index, None)[0]
                 if attrs.get(_ATTR_DECORATION) == "todo":
                     editor.toggle_todo_at_location(index)
+                    return
+                if attrs.get(_ATTR_DECORATION) == "transcript-header":
+                    self.setSelectedRange_(NSMakeRange(index, 0))
+                    editor.toggle_current_transcript()
+                    return
+                if attrs.get(_ATTR_DECORATION) == "transcript-append":
+                    if editor.transcript_target is not None:
+                        editor.transcript_target.appendTranscript_(None)
                     return
                 if (
                     attrs.get(_ATTR_BLOCK) == BlockType.FILE.value
@@ -183,8 +354,19 @@ class Editor(NSObject):
         self._loading = False
         self._current: Note | None = None
         self._last_status = SaveStatus.SAVED
+        self._hovered_block_index: int | None = None
+        self._command_block_index: int | None = None
+        self._command_option_pressed = False
+        self._drag_source_index: int | None = None
+        self._drag_insertion_index: int | None = None
+        self._context_block_index: int | None = None
+        self._context_transcript_chunk: int | None = None
+        self._block_controls_enabled = True
+        self._block_menu = None
+        self._color_menu = None
         self.speech_target = None
         self.attachment_target = None
+        self.transcript_target = None
         self._build()
         return self
 
@@ -192,7 +374,9 @@ class Editor(NSObject):
 
     def _build(self) -> None:
         p = self._palette
-        self.view = solid_view(p.editor_background)
+        self.view = EditorCanvas.alloc().init()
+        self.view.setBackgroundColor_(p.editor_background)
+        self.view.stormpad_editor = self
 
         self._status = add(
             self.view, label("", NSFont.systemFontOfSize_(11), p.text_muted)
@@ -242,21 +426,48 @@ class Editor(NSObject):
         body.setInsertionPointColor_(p.accent_strong)
         body.setTextContainerInset_(NSMakeSize(40.0, 12.0))
         body.setDelegate_(self)
-        body.registerForDraggedTypes_([NSFilenamesPboardType])
+        body.registerForDraggedTypes_([NSFilenamesPboardType, _BLOCK_DRAG_TYPE])
         body.setAccessibilityLabel_("Note blocks")
         scroll.setDocumentView_(body)
         self._scroll = scroll
         self._body = body
 
+        gutter = GutterHoverView.alloc().init()
+        gutter.stormpad_editor = self
+        add(self.view, gutter)
+        pin_edges(gutter, self.view, top=102, leading=0, trailing=None, bottom=18)
+        set_width(gutter, _BODY_INSET)
+        self._gutter_hover = gutter
+
         self._plus = self._overlay_button(
             "+", "showBlockMenu:", "Add Block", symbol="plus"
         )
         self._handle = self._overlay_button(
-            "", "showMoveMenu:", "Drag Block", symbol="line.3.horizontal"
+            "", None, "Drag Block", symbol="line.3.horizontal", drag=True
         )
-        self._plus.setFrame_(NSMakeRect(58, 118, 28, 28))
-        self._handle.setFrame_(NSMakeRect(86, 118, 28, 28))
+        initial = block_gutter_layout(_BODY_INSET, 16.0)
+        self._plus.setFrame_(
+            NSMakeRect(
+                initial.add.x,
+                initial.add.y,
+                initial.add.width,
+                initial.add.height,
+            )
+        )
+        self._handle.setFrame_(
+            NSMakeRect(
+                initial.drag.x,
+                initial.drag.y,
+                initial.drag.width,
+                initial.drag.height,
+            )
+        )
         self._set_gutter_hidden(True)
+
+        self._drag_indicator = solid_view(p.accent_strong)
+        self._drag_indicator.setFrame_(NSMakeRect(24, 118, 68, 2))
+        self.view.addSubview_(self._drag_indicator)
+        self._drag_indicator.setHidden_(True)
 
         self._formatting = rounded_view(
             p.formatting_background,
@@ -270,15 +481,27 @@ class Editor(NSObject):
         self._formatting.setHidden_(True)
 
     def _overlay_button(
-        self, title: str, action: str, accessibility: str, *, symbol: str | None = None
+        self,
+        title: str,
+        action: str | None,
+        accessibility: str,
+        *,
+        symbol: str | None = None,
+        drag: bool = False,
     ) -> NSButton:
         p = self._palette
-        button = NSButton.alloc().init()
+        button = (
+            BlockDragButton.alloc().init()
+            if drag
+            else GutterButton.alloc().init()
+        )
         button.setTitle_(title)
         button.setBordered_(False)
         button.setWantsLayer_(True)
         button.layer().setCornerRadius_(7.0)
         button.layer().setBackgroundColor_(p.gutter_background.CGColor())
+        button.stormpad_idle_color = p.gutter_background
+        button.stormpad_hover_color = p.toolbar_button_hover
         button.layer().setBorderWidth_(1.0)
         button.layer().setBorderColor_(p.gutter_border.CGColor())
         button.setContentTintColor_(p.text_secondary)
@@ -288,10 +511,13 @@ class Editor(NSObject):
                 button.setImage_(image)
                 button.setImagePosition_(NSImageOnly)
         button.setTarget_(self)
-        button.setAction_(action)
+        if action is not None:
+            button.setAction_(action)
+        if drag:
+            button.stormpad_editor = self
         button.setAccessibilityLabel_(accessibility)
         button.setToolTip_(accessibility)
-        self.view.addSubview_(button)
+        self._gutter_hover.addSubview_(button)
         return button
 
     def _build_formatting_toolbar(self) -> None:
@@ -334,12 +560,13 @@ class Editor(NSObject):
         self._loading = True
         try:
             self._current = note
+            self.clear_block_hover()
             self._title.setStringValue_(title_display_text(note))
             blocks = parse_blocks(note.body)
             transcript = next(
                 (block for block in blocks if block.kind == BlockType.TRANSCRIPT), None
             )
-            if note.transcript_visible or note.transcript:
+            if note.transcript_visible:
                 if transcript is None:
                     blocks.append(
                         Block(
@@ -487,23 +714,71 @@ class Editor(NSObject):
 
         if block.kind == BlockType.TRANSCRIPT:
             transcript_attrs = dict(attrs)
-            transcript_attrs[_ATTR_DECORATION] = "transcript"
+            transcript_attrs[_ATTR_DECORATION] = "transcript-header"
             transcript_attrs[_ATTR_READ_ONLY] = True
-            transcript_attrs[NSFontAttributeName] = NSFont.systemFontOfSize_(12.5)
-            transcript_attrs[NSForegroundColorAttributeName] = self._palette.text_secondary
+            transcript_attrs[NSFontAttributeName] = NSFont.boldSystemFontOfSize_(13.0)
+            transcript_attrs[NSForegroundColorAttributeName] = self._palette.text_primary
+            transcript_attrs[NSBackgroundColorAttributeName] = (
+                self._palette.transcript_background
+            )
             caret = "▸" if block.collapsed else "▾"
-            value = f"{caret}  Transcript"
-            if self._current is not None and self._current.transcript and not block.collapsed:
-                chunks = "   ".join(
-                    f"[{chunk.timestamp}] {chunk.text}"
-                    for chunk in self._current.transcript
-                )
-                value += f"   {chunks}"
             result.appendAttributedString_(
                 NSAttributedString.alloc().initWithString_attributes_(
-                    value, transcript_attrs
+                    f"  {caret}  Transcript  ", transcript_attrs
                 )
             )
+            if not block.collapsed:
+                chunks = self._current.transcript if self._current is not None else []
+                if chunks:
+                    for index, chunk in enumerate(chunks):
+                        chunk_attrs = dict(attrs)
+                        chunk_attrs[_ATTR_DECORATION] = "transcript-chunk"
+                        chunk_attrs[_ATTR_READ_ONLY] = True
+                        chunk_attrs[_ATTR_TRANSCRIPT_CHUNK] = index
+                        chunk_attrs[NSFontAttributeName] = NSFont.systemFontOfSize_(12.5)
+                        chunk_attrs[NSForegroundColorAttributeName] = (
+                            self._palette.text_secondary
+                        )
+                        chunk_attrs[NSBackgroundColorAttributeName] = (
+                            self._palette.transcript_background
+                        )
+                        result.appendAttributedString_(
+                            NSAttributedString.alloc().initWithString_attributes_(
+                                f"{_LINE_SEPARATOR}     [{chunk.timestamp}]  {chunk.text}  ",
+                                chunk_attrs,
+                            )
+                        )
+                else:
+                    empty_attrs = dict(attrs)
+                    empty_attrs[_ATTR_DECORATION] = "transcript-empty"
+                    empty_attrs[_ATTR_READ_ONLY] = True
+                    empty_attrs[NSFontAttributeName] = NSFont.systemFontOfSize_(12.5)
+                    empty_attrs[NSForegroundColorAttributeName] = self._palette.text_muted
+                    empty_attrs[NSBackgroundColorAttributeName] = (
+                        self._palette.transcript_background
+                    )
+                    result.appendAttributedString_(
+                        NSAttributedString.alloc().initWithString_attributes_(
+                            f"{_LINE_SEPARATOR}     No transcript yet  ",
+                            empty_attrs,
+                        )
+                    )
+                    append_attrs = dict(attrs)
+                    append_attrs[_ATTR_DECORATION] = "transcript-append"
+                    append_attrs[_ATTR_READ_ONLY] = True
+                    append_attrs[NSFontAttributeName] = NSFont.boldSystemFontOfSize_(
+                        12.5
+                    )
+                    append_attrs[NSForegroundColorAttributeName] = self._palette.accent
+                    append_attrs[NSBackgroundColorAttributeName] = (
+                        self._palette.transcript_background
+                    )
+                    result.appendAttributedString_(
+                        NSAttributedString.alloc().initWithString_attributes_(
+                            f"{_LINE_SEPARATOR}     Append Test Transcript  ",
+                            append_attrs,
+                        )
+                    )
             return result
 
         if block.kind == BlockType.IMAGE and block.target:
@@ -767,11 +1042,9 @@ class Editor(NSObject):
 
     def focus_body(self) -> None:
         self.view.window().makeFirstResponder_(self._body)
-        self._set_gutter_hidden(False)
-        self._position_overlays()
 
     def focus_title(self) -> None:
-        self._set_gutter_hidden(True)
+        self.clear_block_hover()
         self._formatting.setHidden_(True)
         self.view.window().makeFirstResponder_(self._title)
 
@@ -793,6 +1066,31 @@ class Editor(NSObject):
         return (int(selected.location), int(selected.length))
 
     @objc.python_method
+    def current_block_type(self) -> str:
+        blocks = self._extract_blocks()
+        index = min(self._current_block_index(), len(blocks) - 1)
+        return blocks[index].kind.value
+
+    @objc.python_method
+    def formatting_state(self, action: str) -> bool:
+        selected = self._selected_range()
+        if selected is None or self._body.textStorage().length() == 0:
+            return False
+        attribute = {
+            "toggleBold:": _ATTR_BOLD,
+            "toggleItalic:": _ATTR_ITALIC,
+            "toggleUnderline:": _ATTR_UNDERLINE,
+            "editLink:": _ATTR_LINK,
+        }.get(action)
+        if attribute is None:
+            return False
+        probe = min(int(selected.location), self._body.textStorage().length() - 1)
+        attrs = self._body.textStorage().attributesAtIndex_effectiveRange_(
+            probe, None
+        )[0]
+        return bool(attrs.get(attribute))
+
+    @objc.python_method
     def restore_selection(self, selection: tuple[int, int]) -> None:
         length = self._body.string().length()
         location = min(max(selection[0], 0), length)
@@ -800,13 +1098,9 @@ class Editor(NSObject):
         self._body.setSelectedRange_(NSMakeRange(location, span))
 
     def _current_block_index(self) -> int:
-        location = int(self._body.selectedRange().location)
-        prefix = str(
-            self._body.string().substringWithRange_(
-                NSMakeRange(0, min(location, self._body.string().length()))
-            )
+        return block_index_for_location(
+            str(self._body.string()), int(self._body.selectedRange().location)
         )
-        return prefix.count("\n")
 
     def _select_block(self, index: int) -> None:
         lines = str(self._body.string()).split("\n")
@@ -819,16 +1113,74 @@ class Editor(NSObject):
         )
 
     def _set_gutter_hidden(self, hidden: bool) -> None:
-        self._plus.setHidden_(hidden)
-        self._handle.setHidden_(hidden)
+        should_hide = hidden or not self._block_controls_enabled
+        self._plus.setHidden_(should_hide)
+        self._handle.setHidden_(should_hide)
+
+    @objc.python_method
+    def set_block_controls_enabled(self, enabled: bool) -> None:
+        self._block_controls_enabled = bool(enabled)
+        if not self._block_controls_enabled:
+            self.clear_block_hover()
+
+    @objc.python_method
+    def clear_block_hover(self) -> None:
+        self._hovered_block_index = None
+        self._set_gutter_hidden(True)
+
+    @objc.python_method
+    def hover_canvas_point(self, point) -> None:
+        """Show controls only for the block row currently under the pointer."""
+        if (
+            not self._block_controls_enabled
+            or self._current is None
+            or self._body.textStorage().length() == 0
+        ):
+            self.clear_block_hover()
+            return
+        scroll = self._scroll.frame()
+        x = float(point.x)
+        y = float(point.y)
+        if not gutter_hover_hit(
+            x=x,
+            y=y,
+            gutter_width=_BODY_INSET,
+            block_area_top=float(scroll.origin.y),
+            block_area_bottom=float(scroll.origin.y + scroll.size.height),
+            interactive=self._current is not None,
+        ):
+            self.clear_block_hover()
+            return
+        body_point = self._body.convertPoint_fromView_(point, self.view)
+        used = self._body.layoutManager().usedRectForTextContainer_(
+            self._body.textContainer()
+        )
+        inset = self._body.textContainerInset()
+        if float(body_point.y) > float(used.origin.y + used.size.height + inset.height):
+            self.clear_block_hover()
+            return
+        location = int(self._body.characterIndexForInsertionAtPoint_(body_point))
+        index = block_index_for_location(str(self._body.string()), location)
+        self.show_block_hover(index)
+
+    @objc.python_method
+    def show_block_hover(self, index: int) -> None:
+        """Set the hovered block (also used by deterministic screenshot checks)."""
+        self._hovered_block_index = index
+        self._position_overlays()
 
     def _position_overlays(self) -> None:
-        if self._body.textStorage().length() == 0:
+        if (
+            self._hovered_block_index is None
+            or self._body.textStorage().length() == 0
+            or not self._block_controls_enabled
+        ):
+            self._set_gutter_hidden(True)
             return
-        location = min(
-            int(self._body.selectedRange().location),
-            self._body.textStorage().length() - 1,
-        )
+        lines = str(self._body.string()).split("\n")
+        index = min(max(self._hovered_block_index, 0), len(lines) - 1)
+        location = sum(_utf16_length(line) + 1 for line in lines[:index])
+        location = min(location, self._body.textStorage().length() - 1)
         try:
             layout = self._body.layoutManager()
             glyph = layout.glyphRangeForCharacterRange_actualCharacterRange_(
@@ -842,29 +1194,44 @@ class Editor(NSObject):
             visible = self._body.visibleRect()
             scroll_frame = self._scroll.frame()
             inset = self._body.textContainerInset()
-            y = (
-                float(scroll_frame.origin.y)
-                + float(inset.height)
-                + float(rect.origin.y)
-                - float(visible.origin.y)
+            y = block_gutter_canvas_y(
+                scroll_origin_y=float(scroll_frame.origin.y),
+                text_inset_y=float(inset.height),
+                block_origin_y=float(rect.origin.y),
+                scroll_offset_y=float(visible.origin.y),
             )
             visible_top = float(scroll_frame.origin.y) + 4.0
             visible_bottom = (
                 float(scroll_frame.origin.y) + float(scroll_frame.size.height) - 32.0
             )
             on_screen = visible_top <= y <= visible_bottom
-            self._set_gutter_hidden(not (on_screen and self.body_is_first_responder()))
+            self._set_gutter_hidden(not on_screen)
             if not on_screen:
                 return
-            self._plus.setFrameOrigin_((58.0, y))
-            self._handle.setFrameOrigin_((86.0, y))
+            geometry = block_gutter_layout(
+                _BODY_INSET, y - float(self._gutter_hover.frame().origin.y)
+            )
+            self._plus.setFrameOrigin_((geometry.add.x, geometry.add.y))
+            self._handle.setFrameOrigin_((geometry.drag.x, geometry.drag.y))
         except (AttributeError, TypeError, ValueError):
-            pass
+            self._set_gutter_hidden(True)
 
     # -- block actions ------------------------------------------------------
 
     @objc.IBAction
     def showBlockMenu_(self, sender):  # noqa: N802
+        blocks = self._extract_blocks()
+        self._command_block_index = min(
+            self._hovered_block_index
+            if self._hovered_block_index is not None
+            else self._current_block_index(),
+            len(blocks) - 1,
+        )
+        event = self.view.window().currentEvent()
+        self._command_option_pressed = bool(
+            event is not None
+            and int(event.modifierFlags()) & int(NSEventModifierFlagOption)
+        )
         menu = NSMenu.alloc().initWithTitle_("Add Block")
         for title, kind, symbol in _BLOCK_MENU:
             item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
@@ -876,6 +1243,7 @@ class Editor(NSObject):
             if image is not None:
                 item.setImage_(image)
             menu.addItem_(item)
+        self._block_menu = menu
         menu.popUpMenuPositioningItem_atLocation_inView_(None, (0.0, 0.0), sender)
 
     @objc.IBAction
@@ -896,54 +1264,150 @@ class Editor(NSObject):
 
     def _insert_requested_block(self, block: Block) -> None:
         blocks = self._extract_blocks()
-        index = min(self._current_block_index(), len(blocks) - 1)
-        current = blocks[index]
-        event = self.view.window().currentEvent()
-        option_pressed = bool(
-            event is not None
-            and int(event.modifierFlags()) & int(NSEventModifierFlagOption)
+        index = min(
+            self._command_block_index
+            if self._command_block_index is not None
+            else self._current_block_index(),
+            len(blocks) - 1,
         )
-        mode = add_block_menu_mode(
-            current_empty=current.is_empty and current.kind == BlockType.TEXT,
-            option_pressed=option_pressed,
+        blocks, destination = apply_block_command(
+            blocks,
+            index,
+            block,
+            option_pressed=self._command_option_pressed,
         )
-        if mode == "convert":
-            blocks[index] = convert_block(current, block.kind)
-            blocks[index].target = block.target
-            blocks[index].alt = block.alt
-            blocks[index].runs = list(block.runs)
-            destination = index
-        else:
-            blocks, destination = insert_block(
-                blocks, index, block, above=mode == "above"
-            )
         self._replace_document(blocks, register_undo=True, focus_index=destination)
+        self.flash_status(f"{self._block_title(block.kind)} block added")
+        self._command_block_index = None
 
-    @objc.IBAction
-    def showMoveMenu_(self, sender):  # noqa: N802
-        menu = NSMenu.alloc().initWithTitle_("Move Block")
-        for title, action in (("Move Up", "moveBlockUp:"), ("Move Down", "moveBlockDown:")):
-            item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
-                title, action, ""
-            )
-            item.setTarget_(self)
-            menu.addItem_(item)
-        menu.popUpMenuPositioningItem_atLocation_inView_(None, (0.0, 0.0), sender)
-
-    @objc.IBAction
-    def moveBlockUp_(self, sender):  # noqa: N802
-        self._move_current(-1)
-
-    @objc.IBAction
-    def moveBlockDown_(self, sender):  # noqa: N802
-        self._move_current(1)
-
-    def _move_current(self, offset: int) -> None:
-        blocks = self._extract_blocks()
-        moved, destination = move_block(
-            blocks, self._current_block_index(), offset
+    @objc.python_method
+    def _block_title(self, kind: BlockType) -> str:
+        return next(
+            (title for title, candidate, _symbol in _BLOCK_MENU if candidate == kind),
+            "Block",
         )
-        self._replace_document(moved, register_undo=True, focus_index=destination)
+
+    @objc.python_method
+    def begin_block_drag(self, event, source_view) -> bool:
+        """Start an internal native drag from the hovered block handle."""
+        if self._hovered_block_index is None or self._current is None:
+            return False
+        self._drag_source_index = self._hovered_block_index
+        pasteboard_item = NSPasteboardItem.alloc().init()
+        pasteboard_item.setString_forType_(
+            str(self._drag_source_index), _BLOCK_DRAG_TYPE
+        )
+        dragging_item = NSDraggingItem.alloc().initWithPasteboardWriter_(
+            pasteboard_item
+        )
+        image = symbol_image("line.3.horizontal", size=14, weight="semibold")
+        dragging_item.setDraggingFrame_contents_(source_view.bounds(), image)
+        source_view.beginDraggingSessionWithItems_event_source_(
+            [dragging_item], event, self
+        )
+        return True
+
+    def draggingSession_sourceOperationMaskForDraggingContext_(  # noqa: N802
+        self, session, context
+    ):
+        return NSDragOperationMove
+
+    def draggingSession_endedAtPoint_operation_(  # noqa: N802
+        self, session, point, operation
+    ):
+        self.end_block_drag()
+
+    @objc.python_method
+    def update_block_drag_destination(self, sender) -> None:
+        """Resolve a drag location to a before/after block boundary."""
+        if self._drag_source_index is None:
+            return
+        point = self._body.convertPoint_fromView_(sender.draggingLocation(), None)
+        location = int(self._body.characterIndexForInsertionAtPoint_(point))
+        native = str(self._body.string())
+        native_lines = native.split("\n")
+        index = min(
+            block_index_for_location(native, location),
+            max(0, len(native_lines) - 1),
+        )
+        line_location = sum(
+            _utf16_length(line) + 1 for line in native_lines[:index]
+        )
+        rect = self._glyph_rect_for_location(line_location)
+        insertion = index + (
+            1
+            if rect is not None and float(point.y) > float(rect.origin.y + rect.size.height / 2)
+            else 0
+        )
+        self._drag_insertion_index = insertion
+        self._position_drag_indicator(insertion)
+
+    @objc.python_method
+    def _glyph_rect_for_location(self, location: int):
+        if self._body.textStorage().length() == 0:
+            return None
+        location = min(max(location, 0), self._body.textStorage().length() - 1)
+        layout = self._body.layoutManager()
+        glyph = layout.glyphRangeForCharacterRange_actualCharacterRange_(
+            NSMakeRange(location, 0), None
+        )
+        if isinstance(glyph, tuple):
+            glyph = glyph[0]
+        return layout.boundingRectForGlyphRange_inTextContainer_(
+            glyph, self._body.textContainer()
+        )
+
+    @objc.python_method
+    def _position_drag_indicator(self, insertion: int) -> None:
+        native_lines = str(self._body.string()).split("\n")
+        if not native_lines:
+            return
+        probe_index = min(max(insertion, 0), len(native_lines) - 1)
+        location = sum(
+            _utf16_length(line) + 1 for line in native_lines[:probe_index]
+        )
+        rect = self._glyph_rect_for_location(location)
+        if rect is None:
+            return
+        visible = self._body.visibleRect()
+        scroll_frame = self._scroll.frame()
+        inset = self._body.textContainerInset()
+        y = (
+            float(scroll_frame.origin.y)
+            + float(inset.height)
+            + float(rect.origin.y)
+            - float(visible.origin.y)
+        )
+        if insertion >= len(native_lines):
+            y += float(rect.size.height)
+        width = max(20.0, float(self.view.bounds().size.width) - _BODY_INSET * 2)
+        self._drag_indicator.setFrame_(NSMakeRect(_BODY_INSET, y, width, 2.0))
+        self._drag_indicator.setHidden_(False)
+
+    @objc.python_method
+    def perform_block_drop(self, sender) -> bool:
+        payload = sender.draggingPasteboard().stringForType_(_BLOCK_DRAG_TYPE)
+        if payload is None or self._drag_insertion_index is None:
+            self.end_block_drag()
+            return False
+        try:
+            source = int(str(payload))
+        except ValueError:
+            self.end_block_drag()
+            return False
+        blocks, destination = reorder_blocks(
+            self._extract_blocks(), source, self._drag_insertion_index
+        )
+        self._replace_document(blocks, register_undo=True, focus_index=destination)
+        self.flash_status("Block moved")
+        self.end_block_drag()
+        return True
+
+    @objc.python_method
+    def end_block_drag(self) -> None:
+        self._drag_source_index = None
+        self._drag_insertion_index = None
+        self._drag_indicator.setHidden_(True)
 
     def toggle_todo_at_location(self, location: int) -> None:
         self._body.setSelectedRange_(NSMakeRange(location, 0))
@@ -955,7 +1419,12 @@ class Editor(NSObject):
 
     def toggle_current_transcript(self) -> None:
         blocks = self._extract_blocks()
-        index = min(self._current_block_index(), len(blocks) - 1)
+        index = min(
+            self._context_block_index
+            if self._context_block_index is not None
+            else self._current_block_index(),
+            len(blocks) - 1,
+        )
         if blocks[index].kind == BlockType.TRANSCRIPT:
             blocks[index].collapsed = not blocks[index].collapsed
             self._replace_document(blocks, register_undo=True, focus_index=index)
@@ -1111,23 +1580,88 @@ class Editor(NSObject):
 
     def _show_color_menu(self, sender, mode: str) -> None:
         menu = NSMenu.alloc().initWithTitle_("Color")
+        selected_token = self.selected_color_token(mode)
         for token in COLOR_TOKENS:
             title = token.replace("_", " ").title()
-            item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
-                title, "chooseColor:", ""
+            swatch = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+                "      ", "chooseColor:", ""
             )
-            item.setTarget_(self)
-            item.setRepresentedObject_(f"{mode}:{token}")
-            item.setAccessibilityLabel_(f"{mode.title()} color {title}")
-            menu.addItem_(item)
+            swatch.setTarget_(self)
+            swatch.setRepresentedObject_(f"{mode}:{token}")
+            swatch.setImage_(
+                self._color_swatch_image(
+                    token, mode, selected=token == selected_token
+                )
+            )
+            swatch.setToolTip_(f"{mode.title()} color {title}")
+            swatch.setAccessibilityLabel_(f"{mode.title()} color {title}")
+            if token == selected_token:
+                swatch.setState_(1)
+            menu.addItem_(swatch)
+        self._color_menu = menu
         menu.popUpMenuPositioningItem_atLocation_inView_(None, (0.0, 0.0), sender)
+
+    @objc.python_method
+    def _color_swatch_image(self, token: str, mode: str, *, selected: bool = False):
+        image = NSImage.alloc().initWithSize_(NSMakeSize(16.0, 16.0))
+        image.lockFocus()
+        rect = NSMakeRect(2.0, 2.0, 12.0, 12.0)
+        path = NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(
+            rect, 3.0, 3.0
+        )
+        color = (
+            self._palette.formatting_background
+            if token == "default"
+            else self._semantic_color(token)
+        )
+        color.colorWithAlphaComponent_(0.45 if mode == "highlight" else 1.0).setFill()
+        path.fill()
+        (
+            self._palette.accent_strong
+            if selected
+            else self._palette.formatting_border
+        ).setStroke()
+        path.setLineWidth_(2.0 if selected else 1.0)
+        path.stroke()
+        if token == "default":
+            slash = NSBezierPath.bezierPath()
+            slash.moveToPoint_((4.0, 4.0))
+            slash.lineToPoint_((12.0, 12.0))
+            slash.setLineWidth_(1.5)
+            self._palette.text_muted.setStroke()
+            slash.stroke()
+        image.unlockFocus()
+        return image
+
+    @objc.python_method
+    def selected_color_token(self, mode: str) -> str:
+        selected = self._selected_range()
+        if selected is None or self._body.textStorage().length() == 0:
+            return "default"
+        semantic = _ATTR_TEXT_COLOR if mode == "text" else _ATTR_HIGHLIGHT
+        probe = min(int(selected.location), self._body.textStorage().length() - 1)
+        attrs = self._body.textStorage().attributesAtIndex_effectiveRange_(
+            probe, None
+        )[0]
+        token = str(attrs.get(semantic) or "default")
+        return token if token in COLOR_TOKENS else "default"
 
     @objc.IBAction
     def chooseColor_(self, sender):  # noqa: N802
         selected = self._selected_range()
         if selected is None:
             return
-        mode, token = str(sender.representedObject()).split(":", 1)
+        payload = None
+        if hasattr(sender, "representedObject"):
+            payload = sender.representedObject()
+        if payload is None and hasattr(sender, "identifier"):
+            payload = sender.identifier()
+        parts = str(payload).split(":", 1)
+        if len(parts) != 2:
+            return
+        mode, token = parts
+        if mode not in {"text", "highlight"} or token not in COLOR_TOKENS:
+            return
         semantic = _ATTR_TEXT_COLOR if mode == "text" else _ATTR_HIGHLIGHT
         native = (
             NSForegroundColorAttributeName
@@ -1154,6 +1688,8 @@ class Editor(NSObject):
                 selected,
             )
         self._emit_body_change()
+        if self._color_menu is not None:
+            self._color_menu.cancelTracking()
 
     def restoreFormatting_(self, payload):  # noqa: N802
         location, length = payload["range"]
@@ -1210,11 +1746,9 @@ class Editor(NSObject):
             self._on_title(self.title_text())
 
     def textDidBeginEditing_(self, notification):  # noqa: N802
-        self._set_gutter_hidden(False)
-        self._position_overlays()
+        pass
 
     def textDidEndEditing_(self, notification):  # noqa: N802
-        self._set_gutter_hidden(True)
         self._formatting.setHidden_(True)
 
     def control_textView_doCommandBySelector_(  # noqa: N802
@@ -1236,8 +1770,6 @@ class Editor(NSObject):
 
     def textViewDidChangeSelection_(self, notification):  # noqa: N802
         selected = self._body.selectedRange()
-        self._set_gutter_hidden(False)
-        self._position_overlays()
         show_formatting = formatting_toolbar_visible(
             selection_length=int(selected.length),
             editor_focused=self.body_is_first_responder(),
@@ -1351,6 +1883,10 @@ class Editor(NSObject):
     def textView_menu_forEvent_atIndex_(  # noqa: N802
         self, text_view, menu, event, index
     ):
+        self._context_block_index = block_index_for_location(
+            str(self._body.string()), int(index)
+        )
+        self._context_transcript_chunk = None
         attrs = {}
         if self._body.textStorage().length() > 0:
             probe = min(int(index), self._body.textStorage().length() - 1)
@@ -1377,12 +1913,54 @@ class Editor(NSObject):
             remove.setTarget_(self)
             menu.addItem_(remove)
         if kind == BlockType.TRANSCRIPT.value:
+            chunk_index = attrs.get(_ATTR_TRANSCRIPT_CHUNK)
+            self._context_transcript_chunk = (
+                int(chunk_index) if chunk_index is not None else None
+            )
             menu.addItem_(NSMenuItem.separatorItem())
             toggle = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
                 "Collapse / Expand Transcript", "toggleTranscript:", ""
             )
             toggle.setTarget_(self)
             menu.addItem_(toggle)
+            if self.transcript_target is not None:
+                append = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+                    "Append Test Transcript", "appendTranscript:", ""
+                )
+                append.setTarget_(self.transcript_target)
+                menu.addItem_(append)
+            if self._context_transcript_chunk is not None:
+                remove_chunk = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+                    "Remove Transcript Chunk", "removeTranscriptChunk:", ""
+                )
+                remove_chunk.setTarget_(self)
+                menu.addItem_(remove_chunk)
+                move_up = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+                    "Move Chunk Up", "moveTranscriptChunkUp:", ""
+                )
+                move_up.setTarget_(self)
+                menu.addItem_(move_up)
+                move_down = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+                    "Move Chunk Down", "moveTranscriptChunkDown:", ""
+                )
+                move_down.setTarget_(self)
+                menu.addItem_(move_down)
+            menu.addItem_(NSMenuItem.separatorItem())
+            move_block_up = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+                "Move Transcript Block Up", "moveTranscriptBlockUp:", ""
+            )
+            move_block_up.setTarget_(self)
+            menu.addItem_(move_block_up)
+            move_block_down = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+                "Move Transcript Block Down", "moveTranscriptBlockDown:", ""
+            )
+            move_block_down.setTarget_(self)
+            menu.addItem_(move_block_down)
+            remove_container = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+                "Remove Transcript Container", "removeTranscriptContainer:", ""
+            )
+            remove_container.setTarget_(self)
+            menu.addItem_(remove_container)
         if self.speech_target is not None:
             menu.addItem_(NSMenuItem.separatorItem())
             speak = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
@@ -1400,6 +1978,112 @@ class Editor(NSObject):
     @objc.IBAction
     def toggleTranscript_(self, sender):  # noqa: N802
         self.toggle_current_transcript()
+
+    @objc.IBAction
+    def removeTranscriptContainer_(self, sender):  # noqa: N802
+        blocks = self._extract_blocks()
+        index = min(
+            self._context_block_index
+            if self._context_block_index is not None
+            else self._current_block_index(),
+            len(blocks) - 1,
+        )
+        if blocks[index].kind != BlockType.TRANSCRIPT:
+            return
+        blocks.pop(index)
+        self._replace_document(
+            blocks or [Block()],
+            register_undo=True,
+            focus_index=min(index, max(0, len(blocks) - 1)),
+        )
+
+    @objc.IBAction
+    def moveTranscriptBlockUp_(self, sender):  # noqa: N802
+        self._move_context_block(-1)
+
+    @objc.IBAction
+    def moveTranscriptBlockDown_(self, sender):  # noqa: N802
+        self._move_context_block(1)
+
+    @objc.python_method
+    def _move_context_block(self, offset: int) -> None:
+        blocks = self._extract_blocks()
+        source = min(
+            self._context_block_index
+            if self._context_block_index is not None
+            else self._current_block_index(),
+            len(blocks) - 1,
+        )
+        if blocks[source].kind != BlockType.TRANSCRIPT:
+            return
+        insertion = source - 1 if offset < 0 else source + 2
+        blocks, destination = reorder_blocks(blocks, source, insertion)
+        self._context_block_index = destination
+        self._replace_document(blocks, register_undo=True, focus_index=destination)
+
+    @objc.IBAction
+    def removeTranscriptChunk_(self, sender):  # noqa: N802
+        if self._current is None or self._context_transcript_chunk is None:
+            return
+        index = self._context_transcript_chunk
+        if not 0 <= index < len(self._current.transcript):
+            return
+        previous = list(self._current.transcript)
+        self._current.transcript = remove_transcript_chunk(
+            self._current.transcript, index
+        )
+        self._register_transcript_undo(previous)
+        self._refresh_transcript_after_chunk_change()
+
+    @objc.IBAction
+    def moveTranscriptChunkUp_(self, sender):  # noqa: N802
+        self._move_transcript_chunk(-1)
+
+    @objc.IBAction
+    def moveTranscriptChunkDown_(self, sender):  # noqa: N802
+        self._move_transcript_chunk(1)
+
+    @objc.python_method
+    def _move_transcript_chunk(self, offset: int) -> None:
+        if self._current is None or self._context_transcript_chunk is None:
+            return
+        source = self._context_transcript_chunk
+        if not 0 <= source < len(self._current.transcript):
+            return
+        previous = list(self._current.transcript)
+        self._current.transcript, destination = move_transcript_chunk(
+            self._current.transcript, source, offset
+        )
+        if destination == source:
+            return
+        self._register_transcript_undo(previous)
+        self._context_transcript_chunk = destination
+        self._refresh_transcript_after_chunk_change()
+
+    @objc.python_method
+    def _register_transcript_undo(self, chunks: list) -> None:
+        self._body.undoManager().registerUndoWithTarget_selector_object_(
+            self, "restoreTranscriptChunks:", chunks
+        )
+
+    def restoreTranscriptChunks_(self, chunks):  # noqa: N802
+        if self._current is None:
+            return
+        current = list(self._current.transcript)
+        self._register_transcript_undo(current)
+        self._current.transcript = list(chunks)
+        self._refresh_transcript_after_chunk_change()
+
+    @objc.python_method
+    def _refresh_transcript_after_chunk_change(self) -> None:
+        blocks = self._extract_blocks()
+        index = next(
+            (i for i, block in enumerate(blocks) if block.kind == BlockType.TRANSCRIPT),
+            None,
+        )
+        if index is None:
+            return
+        self._replace_document(blocks, register_undo=False, focus_index=index)
 
     def _current_attachment_path(self) -> tuple[Path | None, str | None]:
         if self._current is None:

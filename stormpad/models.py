@@ -84,6 +84,31 @@ class TranscriptBlock:
     text: str
 
 
+def remove_transcript_chunk(
+    chunks: list[TranscriptBlock], index: int
+) -> list[TranscriptBlock]:
+    """Return transcript chunks with one valid index removed."""
+    result = list(chunks)
+    if 0 <= index < len(result):
+        result.pop(index)
+    return result
+
+
+def move_transcript_chunk(
+    chunks: list[TranscriptBlock], index: int, offset: int
+) -> tuple[list[TranscriptBlock], int]:
+    """Move one transcript chunk by an offset, clamped to the list."""
+    if not chunks:
+        return [], 0
+    source = min(max(index, 0), len(chunks) - 1)
+    destination = min(max(source + offset, 0), len(chunks) - 1)
+    result = list(chunks)
+    if source != destination:
+        moving = result.pop(source)
+        result.insert(destination, moving)
+    return result, destination
+
+
 # --- Note ---------------------------------------------------------------------
 
 

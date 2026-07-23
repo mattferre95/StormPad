@@ -197,6 +197,56 @@ def move_block(blocks: list[Block], index: int, offset: int) -> tuple[list[Block
     return result, destination
 
 
+def apply_block_command(
+    blocks: list[Block],
+    index: int,
+    block: Block,
+    *,
+    option_pressed: bool = False,
+) -> tuple[list[Block], int]:
+    """Apply an Add Block command at an explicit block index.
+
+    An empty text block is converted in place. Otherwise the requested block is
+    inserted below, or above while Option is held. Keeping this in the pure
+    block layer makes menu commands deterministic and independently testable.
+    """
+    result = list(blocks) or [Block()]
+    index = min(max(index, 0), len(result) - 1)
+    current = result[index]
+    if current.kind == BlockType.TEXT and current.is_empty:
+        converted = convert_block(current, block.kind)
+        converted.target = block.target
+        converted.alt = block.alt
+        converted.runs = list(block.runs)
+        converted.checked = block.checked
+        converted.indent = block.indent
+        converted.collapsed = block.collapsed
+        result[index] = converted
+        return result, index
+    return insert_block(result, index, block, above=option_pressed)
+
+
+def reorder_blocks(
+    blocks: list[Block], source_index: int, insertion_index: int
+) -> tuple[list[Block], int]:
+    """Move a block to an insertion boundary while preserving its payload.
+
+    ``insertion_index`` is a boundary in the original list (0 through
+    ``len(blocks)``), matching native drag-and-drop destination semantics.
+    """
+    if not blocks:
+        return [], 0
+    source = min(max(source_index, 0), len(blocks) - 1)
+    boundary = min(max(insertion_index, 0), len(blocks))
+    result = list(blocks)
+    moving = result.pop(source)
+    if boundary > source:
+        boundary -= 1
+    destination = min(max(boundary, 0), len(result))
+    result.insert(destination, moving)
+    return result, destination
+
+
 def next_block_after_return(block: Block) -> Block:
     """Natural block produced by Return after a non-empty block."""
     if block.kind in (BlockType.BULLET, BlockType.NUMBERED, BlockType.TODO):

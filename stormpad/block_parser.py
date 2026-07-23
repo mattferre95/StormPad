@@ -228,6 +228,19 @@ def parse_blocks(markdown: str) -> list[Block]:
             i += 1
             continue
 
+        empty_structural = {
+            "#": BlockType.HEADING_1,
+            "##": BlockType.HEADING_2,
+            "###": BlockType.HEADING_3,
+            "-": BlockType.BULLET,
+            "1.": BlockType.NUMBERED,
+            ">": BlockType.QUOTE,
+        }.get(line.strip())
+        if empty_structural is not None:
+            blocks.append(Block(kind=empty_structural))
+            i += 1
+            continue
+
         image = _IMAGE.match(line.strip())
         if image:
             alt, target = image.groups()
@@ -310,8 +323,17 @@ def parse_blocks(markdown: str) -> list[Block]:
             i += 1
             continue
 
-        # Unsupported structural Markdown is retained verbatim.
-        if line.startswith(("    ", "<", "|")):
+        # Unsupported structural Markdown is retained verbatim. StormPad's own
+        # safe inline tags may legitimately begin an otherwise normal paragraph.
+        supported_inline_prefixes = (
+            "<u>",
+            '<span data-stormpad-color="',
+            '<span data-stormpad-highlight="',
+        )
+        unsupported_html = line.startswith("<") and not line.startswith(
+            supported_inline_prefixes
+        )
+        if line.startswith(("    ", "|")) or unsupported_html:
             blocks.append(Block(kind=BlockType.RAW, raw=line))
         else:
             blocks.append(Block(kind=BlockType.TEXT, runs=parse_inline(line)))

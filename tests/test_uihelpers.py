@@ -15,11 +15,15 @@ from stormpad.uihelpers import (
     AutosaveController,
     SaveStatus,
     add_block_menu_mode,
+    block_gutter_canvas_y,
+    block_gutter_layout,
+    block_index_for_location,
     choose_selected_note,
     copy_text,
     default_new_category,
     format_relative,
     formatting_toolbar_visible,
+    gutter_hover_hit,
     is_speakable,
     next_selection_after_delete,
     note_row_is_selected,
@@ -269,6 +273,43 @@ def test_add_block_menu_state():
     assert add_block_menu_mode(current_empty=True, option_pressed=False) == "convert"
     assert add_block_menu_mode(current_empty=False, option_pressed=False) == "below"
     assert add_block_menu_mode(current_empty=False, option_pressed=True) == "above"
+
+
+@pytest.mark.parametrize("text_x", [72.0, 92.0, 160.0])
+def test_block_gutter_geometry_never_overlaps_text(text_x):
+    layout = block_gutter_layout(text_x, 240.0)
+    assert layout.does_not_overlap_text
+    assert layout.add.max_x < layout.drag.x
+    assert layout.drag.max_x == text_x - layout.clearance
+    assert layout.add.y == layout.drag.y == 240.0
+
+
+def test_block_gutter_scroll_offset_mapping():
+    assert block_gutter_canvas_y(
+        scroll_origin_y=102,
+        text_inset_y=12,
+        block_origin_y=240,
+        scroll_offset_y=80,
+    ) == 274
+
+
+def test_gutter_hover_hit_testing_and_hidden_states():
+    values = dict(
+        gutter_width=92,
+        block_area_top=102,
+        block_area_bottom=600,
+    )
+    assert gutter_hover_hit(x=40, y=220, interactive=True, **values)
+    assert not gutter_hover_hit(x=100, y=220, interactive=True, **values)
+    assert not gutter_hover_hit(x=40, y=90, interactive=True, **values)
+    assert not gutter_hover_hit(x=40, y=220, interactive=False, **values)
+
+
+def test_block_index_resolves_explicit_hover_location():
+    native = "first\nsecond\nthird"
+    assert block_index_for_location(native, 0) == 0
+    assert block_index_for_location(native, 7) == 1
+    assert block_index_for_location(native, len(native)) == 2
 
 
 def test_formatting_toolbar_state():

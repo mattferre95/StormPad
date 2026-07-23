@@ -8,11 +8,13 @@ running GUI. The AppKit layer wires these to real views, timers, and defaults.
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
 
 from .block_parser import parse_blocks
 from .blocks import BlockType
+from .exporter import note_to_plain_text
 from .models import CATEGORIES, DEFAULT_CATEGORY, Note
 
 
@@ -58,24 +60,7 @@ def copy_text(note: Note) -> str:
     internal storage metadata (file path, Created/Updated/Category lines, ids)
     and the serialized Markdown header. Paragraph breaks are preserved.
     """
-    parts: list[str] = [note.title or "Untitled Note"]
-    if note.body.strip():
-        blocks = parse_blocks(note.body)
-        visible_body = "\n".join(
-            (block.raw or "")
-            if block.kind == BlockType.RAW
-            else block.text
-            for block in blocks
-            if block.kind not in (BlockType.DIVIDER, BlockType.TRANSCRIPT)
-        ).strip()
-        if visible_body:
-            parts.append(visible_body)
-    if note.transcript:
-        block_lines = ["Transcript"]
-        for block in note.transcript:
-            block_lines.append(f"[{block.timestamp}]\n{block.text}")
-        parts.append("\n\n".join(block_lines))
-    return "\n\n".join(parts).strip() + "\n"
+    return note_to_plain_text(note)
 
 
 def next_selection_after_delete(displayed: list[Note], deleted_id: str) -> str | None:
@@ -115,6 +100,85 @@ def add_block_menu_mode(*, current_empty: bool, option_pressed: bool) -> str:
     if current_empty:
         return "convert"
     return "above" if option_pressed else "below"
+
+
+@dataclass(frozen=True)
+class GutterRect:
+    """AppKit-free rectangle used to prove editor-gutter geometry."""
+
+    x: float
+    y: float
+    width: float
+    height: float
+
+    @property
+    def max_x(self) -> float:
+        return self.x + self.width
+
+
+@dataclass(frozen=True)
+class BlockGutterLayout:
+    add: GutterRect
+    drag: GutterRect
+    text_origin_x: float
+    clearance: float
+
+    @property
+    def does_not_overlap_text(self) -> bool:
+        return self.drag.max_x + self.clearance <= self.text_origin_x
+
+
+def block_gutter_layout(
+    text_origin_x: float,
+    y: float,
+    *,
+    control_size: float = 28.0,
+    control_gap: float = 4.0,
+    text_clearance: float = 8.0,
+) -> BlockGutterLayout:
+    """Place add + drag controls wholly to the left of the text column."""
+    drag_x = text_origin_x - text_clearance - control_size
+    add_x = drag_x - control_gap - control_size
+    return BlockGutterLayout(
+        add=GutterRect(add_x, y, control_size, control_size),
+        drag=GutterRect(drag_x, y, control_size, control_size),
+        text_origin_x=text_origin_x,
+        clearance=text_clearance,
+    )
+
+
+def block_gutter_canvas_y(
+    *,
+    scroll_origin_y: float,
+    text_inset_y: float,
+    block_origin_y: float,
+    scroll_offset_y: float,
+) -> float:
+    """Map a text-layout block origin into editor-canvas coordinates."""
+    return scroll_origin_y + text_inset_y + block_origin_y - scroll_offset_y
+
+
+def gutter_hover_hit(
+    *,
+    x: float,
+    y: float,
+    gutter_width: float,
+    block_area_top: float,
+    block_area_bottom: float,
+    interactive: bool,
+) -> bool:
+    """Whether a pointer is in the dedicated interactive block-gutter strip."""
+    return (
+        interactive
+        and 0.0 <= x <= gutter_width
+        and block_area_top <= y <= block_area_bottom
+    )
+
+
+def block_index_for_location(native_text: str, location: int) -> int:
+    """Resolve a UTF-16-compatible native location to its logical block line."""
+    location = min(max(int(location), 0), len(native_text))
+    return native_text[:location].count("\n")
 
 
 def formatting_toolbar_visible(*, selection_length: int, editor_focused: bool) -> bool:
