@@ -24,6 +24,9 @@ classifiers = [
 dependencies = [
     "pyobjc-core>=10.1",
     "pyobjc-framework-Cocoa>=10.1",
+    # Native text-to-speech (AVSpeechSynthesizer) for the "Speak Selection"
+    # feature. Exposes AVSpeech* via the top-level AVFoundation module.
+    "pyobjc-framework-AVFoundation>=10.1",
 ]
 
 [project.optional-dependencies]

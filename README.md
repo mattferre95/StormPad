@@ -17,14 +17,15 @@ premium, and local-first. Your notes are saved as plain **Markdown files** on
 your Mac. No cloud sync, no accounts, no telemetry, no external AI.
 
 > **Status:** V1 in active development. The local-first **core** (Markdown
-> storage, notes, categories, transcript blocks, search, preferences) and a
+> storage, notes, categories, transcript blocks, search, preferences), a
 > **functional native macOS UI** (three-column window, create/edit/autosave,
-> search, categories, empty/search states, Storm Blue theme) are implemented;
-> `./scripts/run.sh` launches the real app. Still to come: file actions
-> (Copy/Open/Reveal/Delete/Append) and confirmation dialogs, final visual
-> fidelity + the Light and Deep Dark themes, and `.app`/`.dmg` packaging. This
-> README describes the V1 scope; voice/session features are a later phase (see
-> Roadmap).
+> search, categories, empty/search states, Storm Blue theme), and the **V1
+> actions** — Copy Note, Append Test Transcript, Open File, Reveal in Finder,
+> Delete → Trash (with confirmation), and native **Speak Selection** — are all
+> implemented; `./scripts/run.sh` launches the real app. Still to come: final
+> visual fidelity + the Light and Deep Dark themes, and `.app`/`.dmg` packaging.
+> This README describes the V1 scope; voice recording/transcription remain a
+> later phase (see Roadmap).
 
 ## Screenshots
 
@@ -48,7 +49,9 @@ _Screenshots land during Phase 5 (visual fidelity)._
 - **Open File** and **Reveal in Finder**
 - **Copy Note**
 - **Append Test Transcript** — timestamped transcript blocks (a clean seam for
-  future voice sessions; no voice code in V1)
+  future voice sessions; no recording/transcription in V1)
+- **Speak Selection** — native macOS text-to-speech for selected editor text
+  (right-click or Edit ▸ Speech; Stop Speaking to interrupt)
 - A **local-first & private** indicator
 - Three complete themes with a **View → Theme** switcher that persists
 

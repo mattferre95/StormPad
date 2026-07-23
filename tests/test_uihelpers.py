@@ -9,14 +9,17 @@ import pytest
 
 from stormpad import models
 from stormpad.errors import NoteNotFoundError
-from stormpad.models import Note
+from stormpad.models import Note, TranscriptBlock
 from stormpad.session import NoteStore
 from stormpad.uihelpers import (
     AutosaveController,
     SaveStatus,
     choose_selected_note,
+    copy_text,
     default_new_category,
     format_relative,
+    is_speakable,
+    next_selection_after_delete,
     preview_text,
     word_count,
 )
@@ -209,7 +212,80 @@ def test_deleted_selected_note_load_raises(tmp_path):
         store.load_note(note.id)
 
 
+def test_external_file_deletion_detected(tmp_path):
+    """A note file removed outside StormPad is detected, not resurrected on read."""
+    store = NoteStore(tmp_path / "Notes")
+    note = store.create_note("Gone soon")
+    note.path.unlink()  # deleted in Finder / another app
+    with pytest.raises(NoteNotFoundError):
+        store.load_note(note.id)
+    assert note.id not in [n.id for n in store.list_notes()]
+
+
 def test_save_status_values():
     assert SaveStatus.SAVED.value == "Saved locally"
     assert SaveStatus.SAVING.value == "Saving…"
     assert SaveStatus.FAILED.value == "Save failed"
+
+
+# -- copy formatting -----------------------------------------------------------
+
+
+def test_copy_text_title_body_transcript():
+    note = make_note(1, body="Line one.\nLine two.")
+    note.transcript = [TranscriptBlock("00:00:04", "spoken chunk")]
+    out = copy_text(note)
+    assert "Note 1" in out
+    assert "Line one.\nLine two." in out
+    assert "[00:00:04]\nspoken chunk" in out
+    assert "Transcript" in out
+    # No internal metadata leaks.
+    for leak in ("Created:", "Updated:", "Category:", "n1.md", "## Notes"):
+        assert leak not in out
+
+
+def test_copy_text_empty_body_and_no_transcript():
+    note = make_note(2, body="")
+    out = copy_text(note)
+    assert out.strip() == "Note 2"
+    assert "Transcript" not in out
+
+
+def test_copy_text_unicode():
+    note = make_note(3, body="naïve façade — 東京")
+    note.title = "Café résumé"
+    out = copy_text(note)
+    assert "Café résumé" in out
+    assert "naïve façade — 東京" in out
+
+
+# -- next selection after delete ----------------------------------------------
+
+
+def test_next_selection_after_delete_picks_newest_remaining():
+    displayed = [make_note(1, minutes=10), make_note(2, minutes=5), make_note(3, minutes=1)]
+    assert next_selection_after_delete(displayed, "n1") == "n2"  # newest remaining
+    assert next_selection_after_delete(displayed, "n2") == "n1"
+
+
+def test_next_selection_after_delete_last_note():
+    displayed = [make_note(1)]
+    assert next_selection_after_delete(displayed, "n1") is None
+
+
+# -- speech validation ---------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "text,expected",
+    [
+        ("hello", True),
+        ("  hi  ", True),
+        ("", False),
+        ("   ", False),
+        ("\n\t", False),
+        (None, False),
+    ],
+)
+def test_is_speakable(text, expected):
+    assert is_speakable(text) is expected

@@ -14,11 +14,13 @@ from collections.abc import Callable
 import objc
 from AppKit import (
     NSFont,
+    NSMenuItem,
     NSMutableParagraphStyle,
     NSNoBorder,
     NSScrollView,
     NSTextField,
     NSTextView,
+    NSTimer,
     NSViewHeightSizable,
     NSViewWidthSizable,
 )
@@ -46,6 +48,9 @@ class Editor(NSObject):
         self._on_body: Callable[[str], None] = on_body
         self._loading = False
         self._current: Note | None = None
+        self._last_status = SaveStatus.SAVED
+        # Set by the controller; target for the context-menu speech actions.
+        self.speech_target = None
         self._build()
         return self
 
@@ -193,6 +198,7 @@ class Editor(NSObject):
 
     @objc.python_method
     def set_status(self, status: SaveStatus) -> None:
+        self._last_status = status
         p = self._palette
         color = {
             SaveStatus.SAVED: p.success,
@@ -201,6 +207,23 @@ class Editor(NSObject):
         }[status]
         self._status.setStringValue_(status.value)
         self._status.setTextColor_(color)
+
+    @objc.python_method
+    def flash_status(self, text: str) -> None:
+        """Briefly show a transient status (e.g. 'Copied'), then restore."""
+        self._status.setStringValue_(text)
+        self._status.setTextColor_(self._palette.accent_strong)
+        NSTimer.scheduledTimerWithTimeInterval_repeats_block_(
+            1.4, False, lambda timer: self.set_status(self._last_status)
+        )
+
+    @objc.python_method
+    def selected_body_text(self) -> str:
+        """The currently selected text in the body (empty string if none)."""
+        rng = self._body.selectedRange()
+        if rng.length == 0:
+            return ""
+        return str(self._body.string().substringWithRange_(rng))
 
     # -- helpers -------------------------------------------------------------
 
@@ -236,3 +259,20 @@ class Editor(NSObject):
             return
         self._update_word_count()
         self._on_body(self.body_text())
+
+    def textView_menu_forEvent_atIndex_(self, textView, menu, event, index):  # noqa: N802
+        """Augment (not replace) the native context menu with speech actions."""
+        if self.speech_target is None:
+            return menu
+        menu.addItem_(NSMenuItem.separatorItem())
+        speak = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+            "Speak Selection", "speakSelection:", ""
+        )
+        speak.setTarget_(self.speech_target)
+        menu.addItem_(speak)
+        stop = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+            "Stop Speaking", "stopSpeaking:", ""
+        )
+        stop.setTarget_(self.speech_target)
+        menu.addItem_(stop)
+        return menu

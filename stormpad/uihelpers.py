@@ -40,6 +40,41 @@ def word_count(text: str) -> int:
     return len(text.split())
 
 
+def copy_text(note: Note) -> str:
+    """User-visible plain text for Copy Note.
+
+    Includes the title, body, and transcript (timestamps + text). Excludes all
+    internal storage metadata (file path, Created/Updated/Category lines, ids)
+    and the serialized Markdown header. Paragraph breaks are preserved.
+    """
+    parts: list[str] = [note.title or "Untitled Note"]
+    if note.body.strip():
+        parts.append(note.body.rstrip())
+    if note.transcript:
+        block_lines = ["Transcript"]
+        for block in note.transcript:
+            block_lines.append(f"[{block.timestamp}]\n{block.text}")
+        parts.append("\n\n".join(block_lines))
+    return "\n\n".join(parts).strip() + "\n"
+
+
+def next_selection_after_delete(displayed: list[Note], deleted_id: str) -> str | None:
+    """Choose the note to select after deleting ``deleted_id``.
+
+    The newest remaining visible note (``displayed`` is newest-first), else
+    ``None`` (empty state).
+    """
+    for note in displayed:
+        if note.id != deleted_id:
+            return note.id
+    return None
+
+
+def is_speakable(text: str | None) -> bool:
+    """True if ``text`` has non-whitespace content worth speaking."""
+    return bool(text and text.strip())
+
+
 def format_relative(dt: datetime, now: datetime) -> str:
     """Human-friendly note timestamp, à la the design ('Today, 2:14 PM')."""
     # Compare in the reference ('now') timezone.

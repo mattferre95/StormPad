@@ -52,9 +52,17 @@ def _build_menu(app, controller) -> None:
     add_item(file_menu, "New Note", "newNote:", "n", target=controller)
     add_item(file_menu, "Save", "saveNote:", "s", target=controller)
     file_menu.addItem_(NSMenuItem.separatorItem())
+    add_item(file_menu, "Copy Note", "copyNote:", "", target=controller)
+    add_item(file_menu, "Append Test Transcript", "appendTranscript:", "", target=controller)
+    file_menu.addItem_(NSMenuItem.separatorItem())
+    add_item(file_menu, "Open File", "openFile:", "o", target=controller)
+    add_item(file_menu, "Reveal in Finder", "revealInFinder:", "", target=controller)
+    file_menu.addItem_(NSMenuItem.separatorItem())
+    add_item(file_menu, "Delete Note", "deleteNote:", "", target=controller)
+    file_menu.addItem_(NSMenuItem.separatorItem())
     add_item(file_menu, "Close Window", "performClose:", "w")
 
-    # Edit menu (standard responder actions).
+    # Edit menu (standard responder actions + StormPad speech).
     edit_menu = add_menu("Edit")
     add_item(edit_menu, "Undo", "undo:", "z")
     add_item(edit_menu, "Redo", "redo:", "Z")
@@ -63,6 +71,13 @@ def _build_menu(app, controller) -> None:
     add_item(edit_menu, "Copy", "copy:", "c")
     add_item(edit_menu, "Paste", "paste:", "v")
     add_item(edit_menu, "Select All", "selectAll:", "a")
+    edit_menu.addItem_(NSMenuItem.separatorItem())
+    speech_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_("Speech", None, "")
+    speech_menu = NSMenu.alloc().initWithTitle_("Speech")
+    speech_item.setSubmenu_(speech_menu)
+    add_item(speech_menu, "Speak Selection", "speakSelection:", "", target=controller)
+    add_item(speech_menu, "Stop Speaking", "stopSpeaking:", "", target=controller)
+    edit_menu.addItem_(speech_item)
 
     # View menu.
     view_menu = add_menu("View")
@@ -126,7 +141,7 @@ def main(argv: list[str] | None = None) -> int:
 
         def applicationShouldTerminate_(self, app):  # noqa: N802
             if self.controller is not None:
-                self.controller.flush()
+                self.controller.cleanup()  # stop speech + flush pending edits
             return 1  # NSTerminateNow
 
     app = NSApplication.sharedApplication()

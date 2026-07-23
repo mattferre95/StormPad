@@ -15,15 +15,20 @@ from pathlib import Path
 import objc
 from AppKit import (
     NSAlert,
+    NSAlertSecondButtonReturn,
     NSBackingStoreBuffered,
     NSButton,
     NSColor,
     NSFont,
     NSImage,
+    NSPasteboard,
+    NSPasteboardTypeString,
     NSSplitViewController,
     NSSplitViewDividerStyleThin,
     NSSplitViewItem,
+    NSStackView,
     NSTimer,
+    NSUserInterfaceLayoutOrientationHorizontal,
     NSViewController,
     NSWindow,
     NSWindowStyleMaskClosable,
@@ -32,8 +37,9 @@ from AppKit import (
     NSWindowStyleMaskResizable,
     NSWindowStyleMaskTitled,
     NSWindowTitleHidden,
+    NSWorkspace,
 )
-from Foundation import NSMakeRect, NSObject
+from Foundation import NSURL, NSMakeRect, NSObject
 
 from . import paths
 from .defaults import UserDefaultsBackend
@@ -42,12 +48,15 @@ from .models import ALL_NOTES, CATEGORIES, now_local
 from .preferences import Preferences
 from .search import filter_by_category, search_notes
 from .session import NoteStore
+from .speech import SpeechController, SpeechUnavailableError
 from .theme import get_theme
 from .uihelpers import (
     AutosaveController,
     SaveStatus,
     choose_selected_note,
+    copy_text,
     default_new_category,
+    is_speakable,
 )
 from .views import empty_state as es
 from .views.controls import flipped_view, solid_view
@@ -96,6 +105,8 @@ class MainController(NSObject):
             schedule=self._schedule_timer,
             cancel=self._cancel_timer,
         )
+        self._speech = SpeechController()
+        self._action_buttons: list = []
         self._build_window()
         self._ensure_ready()
         self._apply_filter()
@@ -109,6 +120,33 @@ class MainController(NSObject):
         if logo_path.exists():
             return NSImage.alloc().initWithContentsOfFile_(str(logo_path))
         return None
+
+    @objc.python_method
+    def _make_button(self, title: str, action: str, *, primary: bool = False) -> NSButton:
+        p = self._palette
+        button = NSButton.alloc().init()
+        button.setTitle_(("+  " + title) if primary else title)
+        button.setBordered_(False)
+        button.setWantsLayer_(True)
+        button.setFont_(
+            NSFont.boldSystemFontOfSize_(12.5) if primary else NSFont.systemFontOfSize_(12)
+        )
+        button.setTarget_(self)
+        button.setAction_(action)
+        button.layer().setCornerRadius_(7.0)
+        button.sizeToFit()
+        width = float(button.fittingSize().width) + 22.0
+        if primary:
+            button.setContentTintColor_(NSColor.whiteColor())
+            button.layer().setBackgroundColor_(p.accent.CGColor())
+        else:
+            button.setContentTintColor_(p.text_secondary)
+            button.layer().setBackgroundColor_(p.elevated_surface.CGColor())
+            button.layer().setBorderWidth_(1.0)
+            button.layer().setBorderColor_(p.border.CGColor())
+        set_width(button, width)
+        set_height(button, 28)
+        return button
 
     # -- window / layout -----------------------------------------------------
 
@@ -137,27 +175,30 @@ class MainController(NSObject):
         root = solid_view(p.app_background)
         window.setContentView_(root)
 
-        # Header bar with the New Note button (right-aligned).
+        # Header bar with the action toolbar (right-aligned).
         header = add(root, solid_view(p.toolbar_background))
         pin_edges(header, root, top=0, leading=0, trailing=0, bottom=None)
         set_height(header, _HEADER_HEIGHT)
-        new_button = NSButton.alloc().init()
-        new_button.setTitle_("+  New Note")
-        new_button.setBordered_(False)
-        new_button.setWantsLayer_(True)
-        new_button.setFont_(NSFont.boldSystemFontOfSize_(12.5))
-        new_button.setContentTintColor_(NSColor.whiteColor())
-        new_button.layer().setBackgroundColor_(p.accent.CGColor())
-        new_button.layer().setCornerRadius_(8.0)
-        new_button.setTarget_(self)
-        new_button.setAction_("newNote:")
-        add(header, new_button)
-        new_button.trailingAnchor().constraintEqualToAnchor_constant_(
+
+        copy_b = self._make_button("Copy Note", "copyNote:")
+        append_b = self._make_button("Append Transcript", "appendTranscript:")
+        open_b = self._make_button("Open File", "openFile:")
+        reveal_b = self._make_button("Reveal", "revealInFinder:")
+        delete_b = self._make_button("Delete", "deleteNote:")
+        delete_b.setContentTintColor_(p.danger)
+        new_b = self._make_button("New Note", "newNote:", primary=True)
+        self._action_buttons = [copy_b, append_b, open_b, reveal_b, delete_b]
+
+        stack = NSStackView.alloc().init()
+        stack.setOrientation_(NSUserInterfaceLayoutOrientationHorizontal)
+        stack.setSpacing_(6.0)
+        for button in [copy_b, append_b, open_b, reveal_b, delete_b, new_b]:
+            stack.addArrangedSubview_(button)
+        add(header, stack)
+        stack.trailingAnchor().constraintEqualToAnchor_constant_(
             header.trailingAnchor(), -16.0
         ).setActive_(True)
-        new_button.centerYAnchor().constraintEqualToAnchor_(header.centerYAnchor()).setActive_(True)
-        set_width(new_button, 108)
-        set_height(new_button, 30)
+        stack.centerYAnchor().constraintEqualToAnchor_(header.centerYAnchor()).setActive_(True)
 
         # Three-column split.
         self._sidebar = Sidebar(
@@ -172,6 +213,7 @@ class MainController(NSObject):
         self._editor = Editor.alloc().initWithPalette_onTitle_onBody_(
             self._palette, self._on_title_edited, self._on_body_edited
         )
+        self._editor.speech_target = self  # context-menu speech actions
 
         # Editor column = editor + empty-state overlay.
         editor_col = flipped_view()
@@ -287,6 +329,14 @@ class MainController(NSObject):
                 self._empty.set_mode(es.NO_NOTES)
             else:
                 self._empty.set_mode(es.NO_SELECTION)
+        self._update_actions_enabled()
+
+    @objc.python_method
+    def _update_actions_enabled(self) -> None:
+        enabled = self._current_id is not None
+        for button in self._action_buttons:
+            button.setEnabled_(enabled)
+            button.setAlphaValue_(1.0 if enabled else 0.4)
 
     @objc.python_method
     def _update_counts(self, all_notes: list) -> None:
@@ -314,18 +364,20 @@ class MainController(NSObject):
         if note_id == self._current_id:
             return
         self._autosave.flush()
+        self._speech.stop()  # stop speech when switching notes
         note = self._displayed_by_id(note_id)
         if note is None:
             try:
                 note = self._store.load_note(note_id)
             except NoteNotFoundError:
-                self._apply_filter()
+                self._handle_missing_note()
                 return
         self._current_id = note_id
         self._prefs.last_note_id = note_id
         self._editor.load_note(note)
         self._autosave.reset()
         self._empty.hide()
+        self._update_actions_enabled()
 
     @objc.python_method
     def _on_title_edited(self, _text: str) -> None:
@@ -393,6 +445,118 @@ class MainController(NSObject):
     def focusSearch_(self, sender):  # noqa: N802
         self._window.makeFirstResponder_(self._sidebar.search_field)
 
+    @objc.IBAction
+    def copyNote_(self, sender):  # noqa: N802
+        note = self._selected_note_or_none()
+        if note is None:
+            return
+        pasteboard = NSPasteboard.generalPasteboard()
+        pasteboard.clearContents()
+        if pasteboard.setString_forType_(copy_text(note), NSPasteboardTypeString):
+            self._editor.flash_status("Copied")
+        else:
+            self._alert("Copy failed", "Could not write the note to the clipboard.")
+
+    @objc.IBAction
+    def appendTranscript_(self, sender):  # noqa: N802
+        if self._current_id is None:
+            return
+        self._autosave.flush()
+        try:
+            note = self._store.append_test_transcript(self._current_id)
+        except NoteNotFoundError:
+            self._handle_missing_note()
+            return
+        except StorageError as exc:
+            self._alert("Could not append transcript", str(exc))
+            return
+        self._replace_displayed(note)
+        self._editor.load_note(note)
+        self._autosave.reset()
+        self._note_list.set_notes(
+            self._displayed,
+            header="Results" if self._query else self._category,
+            subtitle=self._note_list_subtitle(),
+        )
+
+    @objc.IBAction
+    def openFile_(self, sender):  # noqa: N802
+        note = self._selected_note_or_none()
+        if note is None:
+            return
+        self._autosave.flush()
+        if not note.path.exists():
+            self._handle_missing_note()
+            return
+        url = NSURL.fileURLWithPath_(str(note.path))
+        if not NSWorkspace.sharedWorkspace().openURL_(url):
+            self._alert("Could not open file", f"macOS could not open {note.path.name}.")
+
+    @objc.IBAction
+    def revealInFinder_(self, sender):  # noqa: N802
+        note = self._selected_note_or_none()
+        if note is None:
+            return
+        self._autosave.flush()
+        if not note.path.exists():
+            self._handle_missing_note()
+            return
+        url = NSURL.fileURLWithPath_(str(note.path))
+        NSWorkspace.sharedWorkspace().activateFileViewerSelectingURLs_([url])
+
+    @objc.IBAction
+    def deleteNote_(self, sender):  # noqa: N802
+        note = self._selected_note_or_none()
+        if note is None:
+            return
+        self._autosave.reset()  # discard pending edits; the note is going away
+        if not self._confirm_delete(note.title or "Untitled Note"):
+            return
+        self._speech.stop()  # stop if this note was being spoken
+        try:
+            self._store.delete_note(note.id)  # injectable strategy -> macOS Trash
+        except NoteNotFoundError:
+            self._handle_missing_note()
+            return
+        except StorageError as exc:
+            self._alert("Couldn’t move to Trash", str(exc))  # keep note in the UI
+            return
+        if self._prefs.last_note_id == note.id:
+            self._prefs.last_note_id = None
+        self._current_id = None
+        self._apply_filter()
+
+    @objc.IBAction
+    def speakSelection_(self, sender):  # noqa: N802
+        text = self._editor.selected_body_text()
+        if not is_speakable(text):
+            return
+        try:
+            self._speech.speak(text)
+        except SpeechUnavailableError as exc:
+            self._alert("Speech unavailable", str(exc))
+
+    @objc.IBAction
+    def stopSpeaking_(self, sender):  # noqa: N802
+        self._speech.stop()
+
+    def validateMenuItem_(self, item):  # noqa: N802
+        name = str(item.action())
+        note_actions = (
+            "copyNote:",
+            "appendTranscript:",
+            "openFile:",
+            "revealInFinder:",
+            "deleteNote:",
+        )
+        if name in note_actions:
+            return self._current_id is not None
+        if name == "speakSelection:":
+            return is_speakable(self._editor.selected_body_text())
+        if name == "stopSpeaking:":
+            return self._speech.is_speaking
+        return True
+
     # -- search field delegate -----------------------------------------------
 
     def controlTextDidChange_(self, notification):  # noqa: N802
@@ -412,13 +576,57 @@ class MainController(NSObject):
     # -- window delegate / lifecycle -----------------------------------------
 
     def windowShouldClose_(self, sender):  # noqa: N802
-        self.flush()
+        self.cleanup()
         return True
 
     @objc.python_method
     def flush(self) -> None:
         """Persist any pending edit (selection change / window close / quit)."""
         self._autosave.flush()
+
+    @objc.python_method
+    def cleanup(self) -> None:
+        """Stop speech and flush pending edits (window close / app quit)."""
+        self._speech.cleanup()
+        self._autosave.flush()
+
+    # -- Phase 4 action helpers ----------------------------------------------
+
+    @objc.python_method
+    def _selected_note_or_none(self):
+        if self._current_id is None:
+            return None
+        return self._displayed_by_id(self._current_id)
+
+    @objc.python_method
+    def _replace_displayed(self, note) -> None:
+        for i, existing in enumerate(self._displayed):
+            if existing.id == note.id:
+                self._displayed[i] = note
+                return
+
+    @objc.python_method
+    def _confirm_delete(self, title: str) -> bool:
+        alert = NSAlert.alloc().init()
+        alert.setMessageText_(f"Delete “{title}”?")
+        alert.setInformativeText_("This note will be moved to the Trash.")
+        alert.addButtonWithTitle_("Cancel")  # first button = default (safe)
+        delete_button = alert.addButtonWithTitle_("Delete")
+        if hasattr(delete_button, "setHasDestructiveAction_"):
+            delete_button.setHasDestructiveAction_(True)
+        return alert.runModal() == NSAlertSecondButtonReturn
+
+    @objc.python_method
+    def _handle_missing_note(self) -> None:
+        self._speech.stop()
+        if self._prefs.last_note_id == self._current_id:
+            self._prefs.last_note_id = None
+        self._current_id = None
+        self._alert(
+            "Note not found",
+            "This note no longer exists on disk. The list has been refreshed.",
+        )
+        self._apply_filter()
 
     @objc.python_method
     def smoke_summary(self) -> str:
@@ -449,8 +657,29 @@ class MainController(NSObject):
         alert.runModal()
 
 
+def trash_file(path: Path) -> None:
+    """Delete strategy that moves a file to the macOS Trash (Finder semantics).
+
+    Raises :class:`StorageError` on failure so the UI can keep the note and show
+    an error. This is the Phase-4 injection into the Phase-2 delete seam.
+    """
+    from Foundation import NSFileManager
+
+    url = NSURL.fileURLWithPath_(str(path))
+    ok, _resulting, error = NSFileManager.defaultManager().trashItemAtURL_resultingItemURL_error_(
+        url, None, None
+    )
+    if not ok:
+        detail = error.localizedDescription() if error is not None else "unknown error"
+        raise StorageError(f"could not move to Trash: {detail}")
+
+
 def make_store() -> NoteStore:
-    """Build the NoteStore, honoring the STORMPAD_NOTES_DIR dev/test override."""
+    """Build the NoteStore, honoring the STORMPAD_NOTES_DIR dev/test override.
+
+    Uses the macOS-Trash delete strategy so deletions are recoverable from
+    Finder rather than permanent.
+    """
     override = os.environ.get("STORMPAD_NOTES_DIR")
     notes_dir = Path(override) if override else paths.notes_dir()
-    return NoteStore(notes_dir)
+    return NoteStore(notes_dir, delete_strategy=trash_file)

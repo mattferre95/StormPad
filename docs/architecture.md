@@ -87,6 +87,31 @@ count, selection, and empty/results states. Category selection persists.
 `UserDefaultsBackend`; theme, last note, and last category are restored on
 launch (selection falls back to the newest note, then the empty state).
 
+### Actions & speech (Phase 4)
+
+Actions live on `MainController` and are exposed on both the header toolbar and
+the File/Edit menus, validated by `validateMenuItem_` (and button enable/alpha):
+
+- **Copy Note** → `uihelpers.copy_text(note)` (title + body + transcript;
+  excludes path/Created/Updated/Category/ids/headers) to the general pasteboard.
+- **Append Test Transcript** → `NoteStore.append_test_transcript`; re-renders the
+  transcript section and refreshes the list, selection stable.
+- **Open File** → `NSWorkspace.openURL:` (default app); **Reveal** →
+  `activateFileViewerSelectingURLs:`.
+- **Delete** → confirmation `NSAlert` (Cancel is default/safe) → `NoteStore`'s
+  injected `trash_file` strategy (`NSFileManager trashItemAtURL:`); the note is
+  removed from the UI only after Trash succeeds, then the next note is selected.
+- Pending edits are flushed before Open/Reveal and on note-switch/close/quit;
+  a missing file is detected on these paths and recovered via a clear alert.
+
+**Speech** is isolated in `stormpad/speech.py`. `SpeechController` owns one
+backend (`AVSpeechBackend`, wrapping a strongly-retained `AVSpeechSynthesizer`
+from the top-level `AVFoundation` module), validates the selection, stops any
+current utterance before starting a new one, and is cleaned up on note switch /
+active-note delete / window close / quit. The editor augments — not replaces —
+the native `NSTextView` context menu via `textView:menu:forEvent:atIndex:`. The
+controller logic is unit-tested with an injected fake backend (no real audio).
+
 ## Note Markdown format
 
 See PRD §12. A note has a title (`# ...`), `Created` / `Updated` / `Category`

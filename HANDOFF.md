@@ -34,13 +34,13 @@ design handoff.
 ## Current state
 
 - **Branch:** `main`
-- **Latest commit:** _see `git log -1` — Phase 3 native UI commit_
-- **Git status:** clean after the Phase 3 commit (supplied ZIPs, the raw PRD
+- **Latest commit:** _see `git log -1` — Phase 4 actions/speech commit_
+- **Git status:** clean after the Phase 4 commit (supplied ZIPs, the raw PRD
   `.txt`, and the root logo original are git-ignored; cleaned copies are
   committed; no dev/test notes committed — tests use `tmp_path`, manual runs use
   a temp dir via `STORMPAD_NOTES_DIR`).
-- **Phase complete:** Phase 3 (functional native macOS UI wired to the Phase 2
-  `NoteStore`; 102 tests passing, all headless).
+- **Phase complete:** Phase 4 (actions, reliability, and native Speak Selection;
+  121 tests passing, all headless).
 
 ## Setup / run / test commands
 
@@ -110,6 +110,26 @@ Non-UI logic is AppKit-free and headlessly testable. Modules: `paths`,
 - `tests/test_uihelpers.py` — new (21 tests) for the pure helpers + controller
   save/selection/delete logic.
 
+## Files created / changed (Phase 4)
+
+- `stormpad/speech.py` — new: `SpeechController` + `AVSpeechBackend` +
+  `SpeechUnavailableError` (injectable backend; AVFoundation confined here).
+- `stormpad/window.py` — action toolbar (Copy/Append/Open/Reveal/Delete + New
+  Note) with enabled-state; actions `copyNote:`/`appendTranscript:`/`openFile:`/
+  `revealInFinder:`/`deleteNote:`/`speakSelection:`/`stopSpeaking:`;
+  `validateMenuItem_`; `trash_file` delete strategy wired into `make_store`;
+  speech-stop hooks on switch/delete/close/quit; `cleanup()`.
+- `stormpad/views/editor.py` — `selected_body_text`, `flash_status` ("Copied"),
+  and `textView:menu:forEvent:atIndex:` to augment (not replace) the native
+  context menu with Speak/Stop.
+- `stormpad/app.py` — File menu (Copy Note, Append Test Transcript, Open File
+  ⌘O, Reveal, Delete) and Edit▸Speech submenu; terminate now calls `cleanup()`.
+- `stormpad/uihelpers.py` — `copy_text`, `next_selection_after_delete`,
+  `is_speakable`.
+- `pyproject.toml` — added `pyobjc-framework-AVFoundation` dependency.
+- `tests/test_speech.py` (new) + extended `test_uihelpers.py` (copy/next/
+  speakable/external-deletion) → 121 tests total.
+
 ## Features completed
 
 - Public-GitHub-ready scaffold: package skeleton, packaging, license, ignore
@@ -132,14 +152,19 @@ Non-UI logic is AppKit-free and headlessly testable. Modules: `paths`,
   transcript) with result count; empty / no-selection / no-results states;
   reload + selection/category restoration on relaunch; Storm Blue theme via
   semantic tokens; `NSUserDefaults` prefs adapter.
-- 102 unit tests pass without AppKit; ruff clean; app launches cleanly
-  (verified via `--smoke` runtime introspection).
+- **Actions & reliability (Phase 4):** Copy Note (user-visible text only, via
+  `copy_text`), Append Test Transcript (live re-render), Open File
+  (`NSWorkspace openURL:`), Reveal in Finder (`activateFileViewerSelectingURLs:`),
+  Delete with confirmation → **macOS Trash** (`NSFileManager trashItemAtURL:` via
+  the injectable delete seam; note kept in UI if Trash fails), native
+  **Speak Selection / Stop Speaking** (AVSpeechSynthesizer) in the editor
+  context menu and Edit▸Speech, full menu/button validation, external-deletion
+  handling, and speech-stop + flush on switch/delete/close/quit.
+- 121 unit tests pass without AppKit; ruff clean; app launches cleanly with an
+  empty console (verified via a real launch + `--smoke` introspection).
 
 ## Features remaining
 
-- **Phase 4** — Copy Note, Append Test Transcript (wire the button), Open File,
-  Reveal in Finder, delete-with-confirm (move to Trash), richer error alerts,
-  safe shutdown hardening.
 - **Phase 5** — visual fidelity, three themes from the token tables, View →
   Theme switcher + persistence, logo, states, resize behavior.
 - **Phase 6** — icon generation, optional `.app` packaging, repo audit, docs.
@@ -150,18 +175,37 @@ Non-UI logic is AppKit-free and headlessly testable. Modules: `paths`,
   rounded window-card look, hover states, or exact spacing/typography of the
   mockup yet. Storm Blue is functional-but-flat; Light and Deep Dark are token
   stubs (disabled in the Theme menu) and **not** yet real themes. Live theme
-  switching is Phase 5.
-- Transcript is **read-only** in Phase 3; the "Append Test Transcript" button in
-  the transcript card is present but not yet wired (Phase 4). Copy Note, Open
-  File, Reveal in Finder, and Delete are Phase 4 (toolbar/menu wiring).
-- Autosave re-persists the current note in place and does not reorder the list
-  while typing (order refreshes on note switch / filter change) — deliberate, to
-  avoid the row jumping under the cursor.
+  switching is Phase 5. The action toolbar uses plain buttons (Phase-4 minimal
+  styling), not the designed pill/icon toolbar.
+- Transcript remains **read-only text**; the in-card "Append Test Transcript"
+  button is decorative — the wired action lives in the toolbar/File menu.
+- **Autosave & external deletion:** while a note is open, autosave re-persists
+  the current note (atomic write). If its file was deleted externally *mid-edit*,
+  the next autosave recreates it — a deliberate choice to never silently discard
+  the user's in-progress edits. Open/Reveal/Delete and note-switch/load **do**
+  detect a missing file and recover with a clear alert. Continuous filesystem
+  watching is still out of scope.
+- Autosave does not reorder the list while typing (order refreshes on note
+  switch / filter change) — deliberate, to avoid the row jumping under the cursor.
 - Transcript block text is treated as a single paragraph (no internal blank
   lines) — sufficient for V1's timestamped chunks.
+- **Speech:** uses the current system default voice; no voice picker, rate, or
+  word-highlighting (intentionally out of scope). Menu items validate via
+  `validateMenuItem_` when a menu opens (pull-based), so state is correct on open.
 - **Screenshots:** could not be captured in the build session (no display access
-  for `screencapture`); the app itself launches and runs. See
+  for `screencapture`); the app launches and runs. See
   `docs/screenshots/README.md` for the one-line reproducible capture commands.
+
+## Speech architecture (Phase 4)
+
+`stormpad/speech.py` isolates text-to-speech. `SpeechController` owns one
+backend and enforces validation + "new speech stops previous" + cleanup;
+`AVSpeechBackend` wraps a single strongly-retained `AVSpeechSynthesizer`.
+Verified imports (PyObjC 12.x): `AVSpeechSynthesizer`, `AVSpeechUtterance`,
+`AVSpeechBoundaryImmediate` (== 0) all from the top-level **`AVFoundation`**
+module (dependency `pyobjc-framework-AVFoundation`). Tests inject a fake backend
+— no real audio. Speech stops on note switch, delete of the active note, window
+close, and app quit.
 
 ## Design fidelity gaps (agreed)
 
@@ -205,17 +249,17 @@ Phase 6.
 
 ## Exact next recommended task
 
-Begin **Phase 4** (actions & reliability): wire the toolbar/menu actions to the
-Phase 2 API — **Copy Note** (full Markdown to pasteboard), **Append Test
-Transcript** (`NoteStore.append_test_transcript`, re-render the transcript
-section live), **Open File** (`NSWorkspace openFile:`), **Reveal in Finder**
-(`activateFileViewerSelectingURLs:`), and **Delete with confirmation** (NSAlert
-→ inject a "move to macOS Trash" delete strategy via
-`NSFileManager trashItemAtURL:`). Add clearer error alerts for load/save/missing
-files and harden shutdown flush. Keep everything on the main thread; do not
-touch the Phase 2 storage layer. **Stop for review at the end of Phase 4.**
+Begin **Phase 5** (visual fidelity & themes): transcribe the full handoff token
+tables into `theme.py` for **Light** and **Deep Dark**, add **live theme
+switching** (View▸Theme actions that rebuild/re-color the UI and persist via the
+existing `theme` preference), and raise Storm Blue to design fidelity — gradients
+/glow/rounded surfaces, hover + selection states, exact spacing/typography, the
+designed pill/icon action toolbar, transcript card, and empty/search polish.
+Keep the Phase 2 storage and Phase 3/4 behavior intact. **Stop for review at the
+end of Phase 5.** (Packaging `.app`/`.dmg` remains Phase 6 — see Final Delivery
+Requirements at the top.)
 
-Dev/test hooks available: `STORMPAD_NOTES_DIR` (use a temp notes dir),
+Dev/test hooks available: `STORMPAD_NOTES_DIR` (temp notes dir),
 `STORMPAD_INITIAL_QUERY` (boot into a search state), `python -m stormpad --smoke`
 (build the UI and print introspected state without the event loop).
 
