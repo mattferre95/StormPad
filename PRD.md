@@ -12,6 +12,31 @@
 
 ---
 
+## Phase 5.1 product-direction addendum
+
+The original V1 definition below is retained as product history. The implemented
+Phase 5.1 direction supersedes its editor/filename details:
+
+- the editor is now a clean native block-oriented writing page rather than a
+  permanent metadata/transcript dashboard;
+- the middle note-list column is collapsible and uses a persistent, strong
+  themed selected-note state;
+- the title is the visual first block and commits a safe lowercase
+  title-derived filename;
+- note identity is a stable UUID stored as `ID:` metadata and is independent of
+  path;
+- images/files are copied locally to
+  `Attachments/<stable-note-id>/` and referenced relatively;
+- transcript is an optional read-only block and is absent by default;
+- block and inline formats are defined in `docs/storage.md`.
+
+In particular, the older “timestamped stable filename” and “do not rename the
+underlying file” rules below are no longer current. Existing legacy files are
+not mass-renamed; they adopt the new behavior only on a later safe title
+commit/save.
+
+---
+
 
 ## 1. Product Overview
 

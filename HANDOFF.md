@@ -1,365 +1,357 @@
-# StormPad — HANDOFF
+# StormPad — handoff
 
-Living handoff document. Updated after every phase. Intended for any agent or
-human (including a later Codex session) continuing this work.
+Living continuation document for the native macOS StormPad project.
 
-## Final Delivery Requirements (HARD REQUIREMENT — Phase 6)
+## Hard Phase 6 delivery requirements
 
-When all phases are complete, StormPad **must** ship as:
+Phase 6 has **not** started. After Phase 5.1 is manually reviewed, final
+delivery still requires:
 
-- A real standalone `StormPad.app`.
-- Double-clickable from Finder and Applications (no Terminal, no
-  `scripts/run.sh` required by the end user).
-- Official `Stormpad_logo.png` used as the macOS app icon.
-- Correct `.icns` generation.
-- Correct bundle name, identifier, version, and `Info.plist`.
-- Self-contained packaged dependencies.
-- No dependency on the source folder or the development `.venv`.
-- Reproducible build and install scripts.
-- Installed and tested from `/Applications/StormPad.app`.
-- A final downloadable `.dmg` supporting the normal drag-to-Applications flow.
+- a standalone, double-clickable `StormPad.app`;
+- the official `assets/Stormpad_logo.png` converted into a correct `.icns`;
+- correct bundle name, identifier, version, and `Info.plist`;
+- self-contained dependencies with no source-folder or development-`.venv`
+  dependency;
+- reproducible build/install scripts;
+- installation and testing from `/Applications/StormPad.app`;
+- a drag-to-Applications `StormPad.dmg`;
+- later, a GitHub Release asset and mattferre.com showcase/download link.
 
-This is **not** built in Phase 3. It is preserved here as a hard requirement to
-be delivered in Phase 6 (packaging & public readiness).
-
-## Product summary
-
-StormPad is a native macOS (Python 3.12 + PyObjC/AppKit) local-first notepad.
-Notes are plain Markdown files in `~/Documents/StormPad/Notes/` (the source of
-truth). Apple Notes-like structure (sidebar → note list → editor), original
-premium visual identity, three themes. No cloud, accounts, telemetry, AI, or
-voice in V1. See `PRD.md` for full scope and `docs/design/` notes for the
-design handoff.
-
-## Current state
-
-- **Branch:** `feature/notion-editor`
-- **Base commit:** `02c1513` — Phase 5 visual fidelity / themes
-- **Git status:** Phase 5.1 implementation in progress (supplied ZIPs, the raw PRD
-  `.txt`, and the root logo original are git-ignored; cleaned copies are
-  committed; no dev/test notes or screenshots committed — tests use `tmp_path`,
-  manual runs use a temp dir via `STORMPAD_NOTES_DIR`).
-- **Phase complete:** Phase 5. Phase 5.1 Clean Block Editor Redesign is active.
-- **Verified Phase 5 baseline:** 134 tests pass; Ruff clean; compile and
-  headless imports pass; the native app launches against an isolated `/tmp`
-  notes directory with an empty console.
-
-## Phase 5.1 architecture decision
-
-The redesign uses one native rich `NSTextView` for body blocks with
-paragraph-level block attributes and semantic inline attributes. The title is a
-native `NSTextField` styled and keyboard-connected as the visual first block.
-Pure block/parser/serializer modules keep Markdown conversion headlessly
-testable. The active paragraph is the block selection; normal text selection
-remains AppKit-native. The `+` gutter uses one native block menu. The drag
-handle uses the documented Move Up / Move Down fallback for stability.
-
-Stable IDs are UUIDs stored as `ID:` Markdown metadata. Legacy files get a
-deterministic in-memory ID and write it only on their next real edit. Filenames
-are committed to collision-safe title slugs only after the current file is
-saved safely. Attachments live under
-`~/Documents/StormPad/Attachments/<stable-note-id>/`, and transcript content
-stays separate from editable body blocks. See `docs/architecture.md` for the
-full representation, autosave, undo, attachment, transcript, and migration
-design.
-
-## Setup / run / test commands
-
-```bash
-./scripts/run.sh      # create .venv (first run), install, launch
-./scripts/test.sh     # create .venv[dev] (first run), run pytest
-./scripts/format.sh   # ruff format + lint --fix
-```
-
-Manual: `python3.12 -m venv .venv && source .venv/bin/activate && pip install -e '.[dev]'`.
-
-## Architecture overview
-
-Non-UI logic is AppKit-free and headlessly testable. Modules: `paths`,
-`models`, `storage`, `session`, `search`, `preferences`, `theme` (pure);
-`app`, `window`, `views/*` (AppKit). See `docs/architecture.md`.
-
-## Files created / changed (Phase 1)
-
-- `.gitignore`, `LICENSE` (MIT), `pyproject.toml`
-- `README.md`, `PRD.md` (cleaned from supplied source), `HANDOFF.md`
-- `docs/architecture.md`, `docs/design/README.md`
-- `stormpad/__init__.py`, `__main__.py`, `app.py`, `paths.py` and stub modules
-  `window.py`, `models.py`, `storage.py`, `session.py`, `search.py`,
-  `preferences.py`, `theme.py`
-- `stormpad/views/` — `__init__.py` + stubs: `sidebar.py`, `note_list.py`,
-  `editor.py`, `toolbar.py`, `transcript.py`, `empty_state.py`, `controls.py`
-- `scripts/run.sh`, `test.sh`, `format.sh`, `generate_icons.py`
-- `assets/Stormpad_logo.png` (byte-identical copy of the untouched original)
-
-## Files created / changed (Phase 2)
-
-- `stormpad/errors.py` — new: domain/storage exception hierarchy.
-- `stormpad/models.py` — Note + TranscriptBlock, categories, timestamp helpers.
-- `stormpad/paths.py` — injectable override, `ensure_notes_dir`, no import-time
-  side effects.
-- `stormpad/storage.py` — deterministic serialize / lenient parse, slug +
-  stable filenames, collision handling, atomic writes, read/list.
-- `stormpad/session.py` — `NoteStore` (CRUD, `append_transcript_block`,
-  `append_test_transcript`, injectable clock + delete strategy).
-- `stormpad/search.py` — title/body/transcript search + independent category
-  filter, match spans for highlighting.
-- `stormpad/preferences.py` — injectable backend, theme/last-note/last-category
-  with safe fallbacks; `InMemoryBackend` for tests.
-- `tests/` — replaced `test_smoke.py` with `test_models.py`, `test_paths.py`,
-  `test_storage.py`, `test_session.py`, `test_search.py`, `test_preferences.py`
-  (81 tests, all `tmp_path`-based).
-
-## Files created / changed (Phase 3)
-
-- `stormpad/app.py` — real NSApplication lifecycle, delegate (reopen/terminate
-  flush), full main menu (Cmd+N/S/W/F + Edit), View→Theme submenu; `--smoke`
-  and `--self-check` runtime checks; benign CGColor warning silenced at runtime.
-- `stormpad/window.py` — `MainController`: native window (transparent titlebar,
-  full-size content view, real traffic lights), three-column
-  `NSSplitViewController`, header + New Note button; owns store/prefs/autosave
-  and all selection/search/category state.
-- `stormpad/theme.py` — `Theme` dataclass + functional **Storm Blue** tokens;
-  Light/Deep Dark stubs (same shape); `get_theme`/`all_themes`.
-- `stormpad/uihelpers.py` — new pure helpers: `preview_text`, `word_count`,
-  `format_relative`, `choose_selected_note`, `default_new_category`,
-  `SaveStatus`, `AutosaveController` (injectable scheduler).
-- `stormpad/defaults.py` — new `UserDefaultsBackend` (NSUserDefaults adapter).
-- `stormpad/views/` — implemented `palette.py` (new), `layout.py` (new),
-  `controls.py`, `sidebar.py`, `note_list.py`, `editor.py`, `transcript.py`,
-  `empty_state.py`.
-- `tests/test_uihelpers.py` — new (21 tests) for the pure helpers + controller
-  save/selection/delete logic.
-
-## Files created / changed (Phase 4)
-
-- `stormpad/speech.py` — new: `SpeechController` + `AVSpeechBackend` +
-  `SpeechUnavailableError` (injectable backend; AVFoundation confined here).
-- `stormpad/window.py` — action toolbar (Copy/Append/Open/Reveal/Delete + New
-  Note) with enabled-state; actions `copyNote:`/`appendTranscript:`/`openFile:`/
-  `revealInFinder:`/`deleteNote:`/`speakSelection:`/`stopSpeaking:`;
-  `validateMenuItem_`; `trash_file` delete strategy wired into `make_store`;
-  speech-stop hooks on switch/delete/close/quit; `cleanup()`.
-- `stormpad/views/editor.py` — `selected_body_text`, `flash_status` ("Copied"),
-  and `textView:menu:forEvent:atIndex:` to augment (not replace) the native
-  context menu with Speak/Stop.
-- `stormpad/app.py` — File menu (Copy Note, Append Test Transcript, Open File
-  ⌘O, Reveal, Delete) and Edit▸Speech submenu; terminate now calls `cleanup()`.
-- `stormpad/uihelpers.py` — `copy_text`, `next_selection_after_delete`,
-  `is_speakable`.
-- `pyproject.toml` — added `pyobjc-framework-AVFoundation` dependency.
-- `tests/test_speech.py` (new) + extended `test_uihelpers.py` (copy/next/
-  speakable/external-deletion) → 121 tests total.
-
-## Files created / changed (Phase 5)
-
-- `stormpad/theme.py` — complete ~50-token `Theme` dataclass; three first-class
-  themes (Storm Blue / Light / Deep Dark) with real handoff values + decorative
-  params (gradient/glow/shadow); `menu_state`, `THEME_ORDER`, `all_themes`.
-- `stormpad/views/palette.py` — dynamic token→`NSColor` resolution (with legacy
-  aliases), fonts, `window_gradient`/`glow`/`selection_glow`, and `symbol_image`
-  (SF Symbols).
-- `stormpad/window.py` — split into `_build_window` + `_install_content` (used
-  for **live theme rebuild**); `selectTheme_` (persist + rebuild + restore
-  editor selection/focus); per-theme window `NSAppearance`; gradient root; SF
-  Symbol pill/icon toolbar with tooltips/disabled/destructive; theme checkmarks
-  via `validateMenuItem_`+`menu_state`; `STORMPAD_THEME` dev hook.
-- `stormpad/views/{sidebar,note_list,editor,transcript,controls}.py` — SF Symbol
-  library icons + selected pill/border + hover + shield footer (sidebar);
-  themed selection with border/glow + category chip (note list); status &
-  filename pills, transcript-append target, selection/focus preservation
-  (editor); redesigned transcript card w/ icon header + readiness + in-card
-  Append button (transcript); `GradientView`, `rounded_view`, `icon_view`
-  (controls).
-- `stormpad/app.py` — theme menu items wired to `selectTheme:` with
-  `representedObject`.
-- `stormpad/uihelpers.py` — `status_style` (pure save-status → token mapping).
-- `tests/test_theme.py` (new, 13) → 134 tests total.
-
-## Features completed
-
-- Public-GitHub-ready scaffold: package skeleton, packaging, license, ignore
-  rules, scripts, README, PRD, handoff.
-- **Full headless foundation (Phase 2):** Note model with categories &
-  tz-aware timestamps; deterministic Markdown serialization + lenient parsing;
-  stable slug filenames with collision handling; atomic writes; full CRUD;
-  transcript append API + test-transcript helper; case-insensitive Unicode
-  search with category filtering; injectable preferences with safe fallbacks.
-- `paths` resolves the canonical `~/Documents/StormPad/Notes/` and creates it
-  only on explicit request.
-- **Functional native UI (Phase 3):** real macOS window (native chrome/traffic
-  lights) + three-column split (sidebar 248 / list 326 / editor); brand header
-  with the official logo; search field; category nav (All/Ideas/Sessions/Drafts)
-  with live counts and persisted selection; note list with themed selection,
-  preview, timestamp, category tag; premium serif `NSTextView` editor with title
-  field, created/updated/word-count/filename metadata and real save status;
-  read-only transcript section; create (Cmd+N)/select/edit; debounced autosave
-  (0.4s, atomic writes, flush on switch/close/quit); search (title/body/
-  transcript) with result count; empty / no-selection / no-results states;
-  reload + selection/category restoration on relaunch; Storm Blue theme via
-  semantic tokens; `NSUserDefaults` prefs adapter.
-- **Actions & reliability (Phase 4):** Copy Note (user-visible text only, via
-  `copy_text`), Append Test Transcript (live re-render), Open File
-  (`NSWorkspace openURL:`), Reveal in Finder (`activateFileViewerSelectingURLs:`),
-  Delete with confirmation → **macOS Trash** (`NSFileManager trashItemAtURL:` via
-  the injectable delete seam; note kept in UI if Trash fails), native
-  **Speak Selection / Stop Speaking** (AVSpeechSynthesizer) in the editor
-  context menu and Edit▸Speech, full menu/button validation, external-deletion
-  handling, and speech-stop + flush on switch/delete/close/quit.
-- **Visual fidelity & themes (Phase 5):** complete semantic token architecture;
-  three first-class themes (Storm Blue signature / Light / Deep Dark focus);
-  **live View▸Theme switching** (no relaunch) with checkmarks and persistence;
-  per-theme window appearance (native traffic lights/cursor/scrollbars); gradient
-  background + restrained selection glow (Storm Blue only); SF Symbol pill/icon
-  toolbar; polished sidebar (icons, selected pill, hover, shield footer), note
-  list (themed selection + category chip), editor (status/filename pills, serif
-  typography), transcript card, and empty/search states.
-- 134 unit tests pass without AppKit; ruff clean; all three themes launch
-  cleanly with an empty console (verified via real launches + `--smoke`).
-
-## Features remaining
-
-- **Phase 6** — icon generation (`.icns` from the official logo), `.app`
-  packaging, `.dmg` creation, install/test from `/Applications`, repo audit,
-  final docs. See **Final Delivery Requirements** at the top.
-
-## Design comparison (vs. supplied handoff)
-
-**Matched closely:** three-column proportions; sidebar brand block (official
-logo + wordmark + tagline), search, library rows with icons/counts/selected
-pill, local-first footer; note-list rows (title / 2-line preview / timestamp /
-category chip) with themed selection (cyan glow in Storm Blue, soft blue in
-Light, quiet zinc in Deep Dark); editor title/metadata/save-status; transcript
-card (icon header, readiness indicator, monospace timestamps, Append action);
-empty/search/no-results states; all three palettes; save-status pills.
-
-**Native adaptations (AppKit differs from the static mockup):** real macOS
-window chrome + real traffic lights instead of the mockup's floating rounded
-card and fake lights; per-theme `NSAppearance` drives native controls; window
-background is a subtle vertical gradient (native `CAGradientLayer`) rather than
-the mockup's layered radial glows; the transcript Append button uses a solid
-themed border (CALayer has no native dashed border); fonts are SF Pro / New
-York / SF Mono (no bundled Inter / Newsreader / JetBrains Mono).
-
-**Remaining gaps (honest):** not pixel-perfect — micro-spacing, exact glow
-radii, and some hover treatments are approximations. Hover is implemented on
-sidebar rows; note-row/toolbar hover relies on native defaults. Search-result
-title/body **highlighting is deferred** (match metadata is produced by
-`search.py` but not yet rendered in-list; see gap below). This was not
-verified against the mockup pixel-by-pixel — no display capture was available.
-
-## Known issues / limitations
-
-- **Search highlighting deferred:** result rows show the "N notes matching …"
-  header and correct ordering, but per-match title/body highlighting is not yet
-  drawn. The `SearchResult.matches` spans are available for a later pass.
-- **Autosave & external deletion:** while a note is open, autosave re-persists
-  it (atomic write); if the file was deleted externally *mid-edit*, the next
-  autosave recreates it (deliberate — never silently discard in-progress edits).
-  Open/Reveal/Delete and note-switch/load detect a missing file and recover.
-- Autosave does not reorder the list while typing (refreshes on switch / filter).
-- Transcript block text is a single paragraph (no internal blank lines).
-- **Speech** uses the system default voice; no voice picker/rate/highlighting.
-- **Screenshots** could not be captured in the build session (no display access
-  for `screencapture`); all three themes launch and run with an empty console.
-  See `docs/screenshots/README.md` for reproducible capture commands.
-
-## Speech architecture (Phase 4)
-
-`stormpad/speech.py` isolates text-to-speech. `SpeechController` owns one
-backend and enforces validation + "new speech stops previous" + cleanup;
-`AVSpeechBackend` wraps a single strongly-retained `AVSpeechSynthesizer`.
-Verified imports (PyObjC 12.x): `AVSpeechSynthesizer`, `AVSpeechUtterance`,
-`AVSpeechBoundaryImmediate` (== 0) all from the top-level **`AVFoundation`**
-module (dependency `pyobjc-framework-AVFoundation`). Tests inject a fake backend
-— no real audio. Speech stops on note switch, delete of the active note, window
-close, and app quit.
-
-## Design fidelity gaps (agreed)
-
-- **Editor:** V1 uses a premium native `NSTextView` writing surface (readable
-  prose, New York serif, no visible Markdown during ordinary writing) with safe
-  Markdown serialization underneath — not a rendered/WYSIWYG Markdown view and
-  no preview mode. The Transcript component below the body is preserved.
-- **Window chrome:** real native macOS window + real traffic lights
-  (transparent titlebar / full-size content view), matching the design *inside*
-  the native window rather than recreating the mockup's fake floating card and
-  fake traffic lights.
-- **Fonts:** native SF Pro (UI) / New York (editor titles & body) / SF Mono or
-  Menlo (timestamps, filenames). No bundled web fonts (design used Inter /
-  Newsreader / JetBrains Mono).
-- **Storage path:** `~/Documents/StormPad/Notes/` everywhere; the mockups'
-  `~/StormPad/...` strings are treated as presentation copy to be corrected.
-
-## Theme status
-
-**All three themes are complete and first-class.** `theme.py` holds ~50 semantic
-tokens per theme; `views/palette.py` resolves them to `NSColor`/fonts/SF Symbols
-(no literals in view code). **Live switching** via View▸Theme rebuilds the whole
-content tree (`_install_content`) so no stale colors remain, sets a per-theme
-`NSAppearance`, preserves editor selection/focus, and persists the choice
-(`theme` preference; invalid → Storm Blue). Storm Blue is the default and the
-only theme with decorative glow.
-
-## Packaging status
-
-Not started (Phase 6). `scripts/generate_icons.py` documents the reproducible
-`sips` + `iconutil` workflow from the untouched source logo; it is a stub until
+Do not package, sign, notarize, publish, push, create a release, or build the
+landing page before the Phase 5.1 review is complete and the user requests
 Phase 6.
 
-## Public-repository audit status
+## Repository state
 
-- Supplied ZIPs, raw PRD `.txt`, and root logo original are git-ignored; only
-  cleaned copies are committed. No secrets, `.venv`, caches, or build
-  artifacts committed.
-- **Open item to confirm before publishing:** `PRD.md` preserves the source
-  document faithfully, which includes one machine-specific absolute path
-  (`Proposed Local Project Path`). Decide whether to genericize it before the
-  repo goes public.
+- **Project:** `/Users/mattferre/web/APP/Stormpad`
+- **Branch:** `feature/notion-editor`
+- **Base:** `02c1513` (`main`, Phase 5)
+- **Phase 5.1 implementation commits:**
+  - `c8f2e6c` — `Phase 5.1: add stable IDs and Markdown block foundation`
+  - `6825afe` — `Phase 5.1: build native clean block editor`
+  - the current documentation/handoff checkpoint follows those commits
+- **Expected working tree at handoff:** clean
+- **Remote activity:** none; nothing was pushed or published
+- **Packaging status:** not started
 
-## Exact next recommended task
+Initial inspection confirmed the expected Phase 1–5 history
+(`fae719f` → `b20ff31` → `498e8ff` → `eeacc97` → `02c1513`) and a clean
+`main`. The verified baseline was 134 tests, Ruff clean, compile/import checks
+clean, `--smoke` successful with display permission, and a real isolated native
+launch.
 
-Begin **Phase 6** (packaging & public readiness), per the Final Delivery
-Requirements at the top: generate `.icns` from the untouched official logo via a
-reproducible `scripts/generate_icons.py` (`sips` + `iconutil`); build a
-standalone, double-clickable `StormPad.app` with a correct `Info.plist` (bundle
-name / identifier / version) and self-contained dependencies (no source-folder
-or `.venv` dependency; e.g. py2app or an embedded venv); install and test from
-`/Applications/StormPad.app`; produce a drag-to-Applications `.dmg`; add
-reproducible build/install scripts; then a final repo audit and doc pass. Do not
-push/publish. **Stop for review at the end of Phase 6.**
+## Phase 5.1 result
 
-### Future distribution direction (do NOT build yet)
+The dashboard-like editor was replaced with a calm page-style native block
+editor while preserving local Markdown, autosave, search, categories, actions,
+speech, and all three themes.
 
+### Architecture
+
+The body is one rich native `NSTextView`. Paragraph attributes carry block
+semantics; attributed runs carry inline semantics. The title is a native
+`NSTextField` styled and keyboard-connected as the visual first block. This is
+AppKit-only: no web view, HTML contenteditable, browser JavaScript, React, or
+Electron.
+
+Pure modules keep the model testable:
+
+- `blocks.py` — block/inline types and structural operations;
+- `block_parser.py` / `block_serializer.py` — safe deterministic Markdown;
+- `attachments.py` — managed local copies and orphan policy;
+- `storage.py` — note envelope, identity migration, atomic write and filename
+  commit;
+- `session.py` — stable-ID CRUD, transcript seam, note+attachment deletion.
+
+The active paragraph is the block selection and the standard `NSTextView` range
+is the inline selection. Native typing undo remains intact. Structural and
+formatting operations register attributed-string snapshots with the same undo
+manager.
+
+See `docs/architecture.md` and `docs/storage.md`.
+
+### Selected note and collapsible list
+
+The selected row uses a themed filled background, border, stronger title,
+left-side accent indicator, and restrained Storm Blue glow. Regular table
+selection keeps it visible while the editor has focus. Light uses soft
+gray-blue; Deep Dark uses quiet zinc.
+
+The middle note-list panel collapses to a 46-point vertical native tab and the
+editor receives the freed width. Collapse state is stored by `Preferences`,
+survives relaunch, and is reapplied after theme rebuilds.
+
+### Clean new-note and writing canvas
+
+- No filename, word count, Created/Updated row, permanent “Saved locally” pill,
+  transcript card, or heavy editor border occupies the normal canvas.
+- Saving/Saved is a subtle transient top-right message; failures remain visible.
+- Metadata is available through Note ▸ Note Info, Open File, and Reveal in
+  Finder.
+- Native scroll views use autohiding overlay indicators.
+- A pristine note displays only the unsaved `Untitled` title placeholder.
+- Command-N focuses the title. Return enters the first text block; Up from the
+  first body position returns to the title.
+
+### Stable IDs and filenames
+
+New notes receive one UUID stored as `ID: <uuid>`. Identity and persisted
+selection no longer depend on the path. Legacy files without `ID` receive a
+deterministic UUIDv5 in memory and retain their old stem as a temporary lookup
+alias. Merely opening them does not rewrite, rename, or schedule an autosave;
+the next actual edit persists the ID.
+
+A safe title commit first atomically writes the current file, then moves it to
+a collision-free lowercase Unicode-friendly kebab name. Empty/unsafe titles
+fall back to `untitled-note.md`; collisions append `-2`, `-3`, and so on. The
+model path changes only after the move succeeds. A failed move leaves the
+newly saved old file and its in-memory path intact.
+
+### Blocks and keyboard behavior
+
+Implemented blocks:
+
+- Text
+- Heading 1, Heading 2, Heading 3
+- To-do
+- Bulleted list
+- Numbered list
+- Quote
+- Divider
+- Link
+- Image
+- File
+- Transcript
+
+`+` opens a native insertion menu. It converts the current empty paragraph,
+inserts below by default, and supports Option-insert-above. The handle exposes
+undoable Move Up / Move Down. Return continues compatible blocks, empty lists
+and to-dos exit to Text, Backspace converts an empty non-text block, and
+Tab/Shift-Tab changes supported-list indentation. Cocoa ranges account for
+UTF-16 so emoji/non-BMP text does not shift later block boundaries.
+
+### Inline formatting
+
+Bold, italic, underline, link, curated text color, and curated highlight are
+implemented as semantic attributed runs. Commands B/I/U/K route through native
+menus. A contextual native toolbar appears for a non-empty selection and hides
+when selection/focus collapses.
+
+The stored palette is `default`, `gray`, `blue`, `cyan`, `green`, `yellow`,
+`orange`, `red`, and `purple`. Theme changes rerender tokens but do not mutate
+Markdown.
+
+### Markdown
+
+Standard Markdown is used for headings, emphasis, lists, to-dos, quote,
+divider, link, image, and file. Underline uses `<u>`. Curated colors use
+allow-listed `data-stormpad-color` / `data-stormpad-highlight` spans. Transcript
+placement/collapse uses a StormPad HTML comment. Markdown/HTML is never
+executed; output is escaped and unsafe color tokens are rejected.
+
+Unknown metadata is preserved. Existing Phase 1–5 title/Notes/Transcript files
+continue to load without an open-time rewrite.
+
+### Attachments
+
+Managed copies live at:
+
+```text
+~/Documents/StormPad/Attachments/<stable-note-id>/
 ```
-mattferre.com StormPad showcase
-→ Download for macOS
-→ GitHub Release asset: StormPad.dmg
-→ Open DMG
-→ Drag StormPad to Applications
-→ Launch StormPad.app
+
+Imports are copied atomically, names are sanitized/collision-safe, and Markdown
+stores relative links from `Notes/`. Title/file rename therefore cannot break
+an attachment. Native images are aspect-constrained previews. File blocks show
+an icon, filename, type, and size; double-click opens through `NSWorkspace`.
+Context actions reveal or remove the block.
+
+Removing a block records an orphan candidate in `.orphans.json` and does not
+risk deleting the managed file. Delete stages the note and its attachment
+directory together before the configured Trash strategy; failures roll back.
+
+### Transcript
+
+Transcript chunks remain separate `Note.transcript` data. Ordinary blank notes,
+including Sessions, have no transcript block. Existing chunks, explicit block
+insertion, or Development ▸ Append Test Transcript make it appear. The editor
+renders timestamps/chunks as protected read-only content and persists
+collapsed/expanded state.
+
+No recording, live transcription, audio capture, or WisperFlow integration was
+implemented.
+
+### Autosave, actions, themes, accessibility
+
+All editor mutations reuse the existing 0.4-second debounce. Note switch,
+close, and quit flush pending work; stale callbacks cannot write into a newly
+selected note. Theme switching flushes, rebuilds, then restores stable
+selection/focus without mutating content.
+
+Copy Note, Open File, Reveal in Finder, Delete to Trash, Speak/Stop, search, and
+categories remain available through native menus/context actions. The primary
+toolbar now contains only collapse/expand, Note Info, and New Note. Append Test
+Transcript moved to Development.
+
+New controls have labels/tooltips and comfortable targets. Theme tokens cover
+the gutter, formatting controls, selection, transcript, attachments, quote,
+divider, title placeholder, and collapsed tab across Storm Blue, Light, and
+Deep Dark.
+
+## Files changed in Phase 5.1
+
+New:
+
+- `stormpad/blocks.py`
+- `stormpad/block_parser.py`
+- `stormpad/block_serializer.py`
+- `stormpad/attachments.py`
+- `stormpad/views/block_editor.py`
+- `tests/test_blocks.py`
+- `tests/test_attachments.py`
+- `docs/storage.md`
+
+Updated:
+
+- `stormpad/app.py`
+- `stormpad/errors.py`
+- `stormpad/models.py`
+- `stormpad/paths.py`
+- `stormpad/preferences.py`
+- `stormpad/session.py`
+- `stormpad/storage.py`
+- `stormpad/theme.py`
+- `stormpad/uihelpers.py`
+- `stormpad/views/editor.py`
+- `stormpad/views/note_list.py`
+- `stormpad/window.py`
+- `tests/test_preferences.py`
+- `tests/test_session.py`
+- `tests/test_storage.py`
+- `tests/test_uihelpers.py`
+- `README.md`
+- `PRD.md`
+- `docs/architecture.md`
+- `docs/screenshots/README.md`
+- `HANDOFF.md`
+
+## Automated verification
+
+Final available checks:
+
+```text
+./scripts/test.sh
+188 passed
+
+./.venv/bin/ruff check .
+All checks passed
+
+python -m compileall -q stormpad tests
+passed
+
+headless imports
+passed
+
+all three theme objects
+passed
+
+AppKit module imports
+passed
+
+python -m stormpad --self-check
+StormPad 0.1.0 self-check OK
 ```
 
-The landing page (mattferre.com showcase) and GitHub Release are **future**
-work — record the direction, build nothing in Phase 5/6 beyond the local
-`.app`/`.dmg`.
+Tests cover stable ID creation/migration, legacy aliases, filenames and
+collisions/failure rollback, all blocks and inline formats, unsafe color/HTML
+handling, attachments and rename stability, transcript visibility/collapse,
+preferences, selected-row/title/block-menu/formatting UI helpers, autosave
+stale-selection safety, and all theme token sets.
 
-Dev/test hooks: `STORMPAD_NOTES_DIR` (temp notes dir), `STORMPAD_INITIAL_QUERY`
-(boot into a search state), `STORMPAD_THEME` (force initial theme),
-`python -m stormpad --smoke` (build the UI + print introspected state without the
-event loop).
+## Manual/visual verification
 
-## Guardrails (for any continuing agent)
+Completed against isolated temporary notes:
 
-- Do **not** touch `/Users/mattferre/web/APP/wisperflow_` — separate project.
-- No voice, AI, cloud, accounts, telemetry, analytics, or speculative features.
-- Do not invent design; follow the handoff and the agreed fidelity gaps above.
-- Do not modify the official logo; keep the original source untouched.
-- Markdown files remain the source of truth.
-- Do not push or create a remote. Commit each stable phase locally only.
-- Update this file after every phase.
+- baseline native app launch and `--smoke`;
+- populated Phase 5.1 native launch with no console traceback;
+- visibly strong selected note while the body held focus;
+- clean canvas with heading, bold/underline/color, to-dos, quote, divider, and
+  managed image preview;
+- attachment copy remained managed rather than source-path dependent;
+- a crash caused by an invalid custom selection rect was diagnosed from the
+  macOS crash report and fixed; the subsequent app remained stable.
+
+Inspected sanitized screenshot:
+
+```text
+/var/folders/z4/lznm_6tn1l3dc4sf7wm25d100000gn/T/codex-shot-2026-07-23_19-54-43.png
+```
+
+The final layout-offset change for the active-block gutter was made after the
+last successful capture. A subsequent native relaunch request was blocked by
+the execution environment's approval/usage limit, so that last adjustment and
+the remaining screenshot matrix were **not** visually re-verified. Do not claim
+otherwise.
+
+## Known limitations / review items
+
+- Block reordering uses the documented Move Up / Move Down menu fallback, not
+  true drag-and-drop.
+- The gutter follows the active block while the body is focused; proximity-only
+  pointer hover is not implemented.
+- The compact file presentation is an attributed native line rather than a
+  separate rounded card view.
+- Attributed to-do and transcript content is keyboard/screen-reader ordered,
+  but the to-do glyph is not a separate native accessibility element.
+- Search results are correct but per-match in-row highlighting remains deferred.
+- The final gutter scroll/coordinate adjustment, blank-note screen, collapsed
+  relaunch, contextual formatting toolbar, block menu, transcript collapse,
+  and Light/Deep Dark Phase 5.1 screens still require hands-on visual review.
+- Speech uses the system voice and has no voice/rate picker.
+- If a file is deleted externally while unsaved edits are active, autosave
+  recreates it rather than discarding the user's edits.
+
+## Exact next task
+
+**Do not start Phase 6 yet.** First run the remaining Phase 5.1 manual review
+against a fresh temporary `STORMPAD_NOTES_DIR`:
+
+1. verify the final gutter position at the first block and after scrolling;
+2. create a blank note, title/body transition, commit/rename it twice, and
+   relaunch to confirm stable selection;
+3. collapse/relaunch/expand the note-list panel;
+4. insert/reorder every block and exercise every inline format/shortcut;
+5. import image/file, delete the original source, Open/Reveal, and verify Trash
+   bundling on a disposable note;
+6. insert/append/collapse Transcript and verify normal notes remain clean;
+7. switch and inspect all three themes;
+8. verify Copy Note, Speak Selection, pending-edit quit, and an empty console;
+9. capture/inspect the sanitized screenshot matrix in
+   `docs/screenshots/README.md`.
+
+If that review passes, approve Phase 5.1 and only then begin Phase 6 using the
+hard delivery requirements at the top.
+
+## Development hooks
+
+- `STORMPAD_NOTES_DIR` — isolated notes directory
+- `STORMPAD_INITIAL_QUERY` — launch into search
+- `STORMPAD_THEME` — force initial development theme
+- `STORMPAD_FOCUS_EDITOR` — focus body after launch
+- `STORMPAD_EDITOR_SELECTION=location,length` — deterministic selection
+- `STORMPAD_SHOW_BLOCK_MENU=1` — open the insertion menu for capture
+- `python -m stormpad --smoke` — build the real UI without event loop
+
+## Guardrails
+
+- Do not touch `/Users/mattferre/web/APP/wisperflow_`.
+- Do not add cloud, AI, accounts, telemetry, or speculative scope.
+- Do not alter the official logo source.
+- Keep Markdown and local managed files as the source of truth.
+- Do not push, create a remote, package, publish, or release without an explicit
+  next-phase request.
 
 ## WisperFlow statement
 
-**WisperFlow was not touched.** No files under `/Users/mattferre/web/APP/wisperflow_`
-were read, modified, moved, or copied. StormPad is an entirely separate project.
+WisperFlow was untouched. No file under
+`/Users/mattferre/web/APP/wisperflow_` was read, modified, moved, or copied.
