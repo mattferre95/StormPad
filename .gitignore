@@ -1,0 +1,44 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Tooling caches
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Env / secrets
+.env
+.env.*
+
+# Logs
+*.log
+logs/
+
+# macOS
+.DS_Store
+
+# Local design build references (inspected, never committed)
+/design_ref/
+*.zip
+
+# Supplied source inputs — kept locally & untouched, never committed.
+# Cleaned copies live in the repo instead (assets/Stormpad_logo.png, PRD.md).
+/Stormpad_logo.png
+/StormPad PRD — Local-First Notepad.txt
+
+# Local notes used during development
+/scratch/
+/local-notes/
+
+# Generated app bundle
+*.app

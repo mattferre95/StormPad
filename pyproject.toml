@@ -1,0 +1,50 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "stormpad"
+version = "0.1.0"
+description = "A local-first notepad for capturing ideas as they happen."
+readme = "README.md"
+requires-python = ">=3.12"
+license = { file = "LICENSE" }
+authors = [{ name = "StormPad contributors" }]
+keywords = ["macos", "notes", "markdown", "local-first", "pyobjc", "appkit"]
+classifiers = [
+    "Environment :: MacOS X :: Cocoa",
+    "Operating System :: MacOS :: MacOS X",
+    "Programming Language :: Python :: 3.12",
+    "License :: OSI Approved :: MIT License",
+    "Topic :: Text Editors",
+]
+
+# Runtime dependencies. AppKit access comes from the Cocoa framework bindings
+# (which pull in pyobjc-core). Pinned to a floor known to support Python 3.12.
+dependencies = [
+    "pyobjc-core>=10.1",
+    "pyobjc-framework-Cocoa>=10.1",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.5",
+]
+
+[project.scripts]
+stormpad = "stormpad.app:main"
+
+[tool.setuptools.packages.find]
+include = ["stormpad*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
