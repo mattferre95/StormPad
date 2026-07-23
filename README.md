@@ -16,8 +16,12 @@ editor, search, autosave — but is visually its own thing: modern, calm,
 premium, and local-first. Your notes are saved as plain **Markdown files** on
 your Mac. No cloud sync, no accounts, no telemetry, no external AI.
 
-> **Status:** V1 in active development. This README describes the V1 scope.
-> Voice/session-notes features are explicitly a later phase (see Roadmap).
+> **Status:** V1 in active development. The local-first **core** — Markdown
+> storage, notes, categories, transcript blocks, search, and preferences — is
+> implemented and unit-tested (headless). The native macOS **UI** is being
+> built next; `./scripts/run.sh` currently launches a placeholder. This README
+> describes the V1 scope. Voice/session-notes features are a later phase (see
+> Roadmap).
 
 ## Screenshots
 
@@ -118,9 +122,36 @@ Formatting & lint:
 ~/Documents/StormPad/Notes/
 ```
 
-The app creates this folder on first launch. Markdown files are the source of
-truth. Renaming a note updates the title inside the Markdown file; the
-underlying filename stays stable in V1.
+The app creates this folder on first launch (never on import; tests use a
+temporary directory and never touch your real Documents). Markdown files are
+the source of truth. Renaming a note updates the title inside the Markdown
+file; the underlying filename stays stable in V1.
+
+Each note is a plain, human-readable Markdown file:
+
+```markdown
+# App idea — voice session notes
+
+Created: 2026-07-23 16:47:06+02:00
+Updated: 2026-07-23 16:47:06+02:00
+Category: Sessions
+
+## Notes
+
+Capture before it evaporates.
+Local-first, plain Markdown.
+
+## Transcript
+
+[00:00:04]
+This is a captured thought.
+
+[00:00:11]
+Chunks append in order.
+```
+
+Filenames are stable, slugged, and timestamped (e.g.
+`2026-07-23-1647-app-idea-voice-session-notes.md`).
 
 ## Architecture
 

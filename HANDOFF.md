@@ -15,11 +15,12 @@ design handoff.
 ## Current state
 
 - **Branch:** `main`
-- **Latest commit:** _see `git log -1` — Phase 1 scaffold commit_
-- **Git status:** clean after the Phase 1 commit (supplied ZIPs, the raw PRD
+- **Latest commit:** _see `git log -1` — Phase 2 domain/storage commit_
+- **Git status:** clean after the Phase 2 commit (supplied ZIPs, the raw PRD
   `.txt`, and the root logo original are git-ignored; cleaned copies are
-  committed).
-- **Phase complete:** Phase 1 (repository scaffold).
+  committed; no test-generated notes committed — tests use `tmp_path`).
+- **Phase complete:** Phase 2 (domain, storage, session, search, preferences —
+  fully headless, 81 tests passing).
 
 ## Setup / run / test commands
 
@@ -41,29 +42,49 @@ Non-UI logic is AppKit-free and headlessly testable. Modules: `paths`,
 
 - `.gitignore`, `LICENSE` (MIT), `pyproject.toml`
 - `README.md`, `PRD.md` (cleaned from supplied source), `HANDOFF.md`
-- `docs/architecture.md`
+- `docs/architecture.md`, `docs/design/README.md`
 - `stormpad/__init__.py`, `__main__.py`, `app.py`, `paths.py` and stub modules
   `window.py`, `models.py`, `storage.py`, `session.py`, `search.py`,
   `preferences.py`, `theme.py`
 - `stormpad/views/` — `__init__.py` + stubs: `sidebar.py`, `note_list.py`,
   `editor.py`, `toolbar.py`, `transcript.py`, `empty_state.py`, `controls.py`
 - `scripts/run.sh`, `test.sh`, `format.sh`, `generate_icons.py`
-- `tests/test_smoke.py`
 - `assets/Stormpad_logo.png` (byte-identical copy of the untouched original)
+
+## Files created / changed (Phase 2)
+
+- `stormpad/errors.py` — new: domain/storage exception hierarchy.
+- `stormpad/models.py` — Note + TranscriptBlock, categories, timestamp helpers.
+- `stormpad/paths.py` — injectable override, `ensure_notes_dir`, no import-time
+  side effects.
+- `stormpad/storage.py` — deterministic serialize / lenient parse, slug +
+  stable filenames, collision handling, atomic writes, read/list.
+- `stormpad/session.py` — `NoteStore` (CRUD, `append_transcript_block`,
+  `append_test_transcript`, injectable clock + delete strategy).
+- `stormpad/search.py` — title/body/transcript search + independent category
+  filter, match spans for highlighting.
+- `stormpad/preferences.py` — injectable backend, theme/last-note/last-category
+  with safe fallbacks; `InMemoryBackend` for tests.
+- `tests/` — replaced `test_smoke.py` with `test_models.py`, `test_paths.py`,
+  `test_storage.py`, `test_session.py`, `test_search.py`, `test_preferences.py`
+  (81 tests, all `tmp_path`-based).
 
 ## Features completed
 
 - Public-GitHub-ready scaffold: package skeleton, packaging, license, ignore
   rules, scripts, README, PRD, handoff.
-- `paths` resolves the canonical `~/Documents/StormPad/Notes/`.
-- Runnable placeholder `main()` + `python -m stormpad`.
-- Smoke tests pass; package imports without AppKit.
+- **Full headless foundation (Phase 2):** Note model with categories &
+  tz-aware timestamps; deterministic Markdown serialization + lenient parsing;
+  stable slug filenames with collision handling; atomic writes; full CRUD;
+  transcript append API + test-transcript helper; case-insensitive Unicode
+  search with category filtering; injectable preferences with safe fallbacks.
+- `paths` resolves the canonical `~/Documents/StormPad/Notes/` and creates it
+  only on explicit request.
+- Runnable placeholder `main()` + `python -m stormpad` (UI still Phase 3).
+- 81 unit tests pass without AppKit; ruff clean.
 
 ## Features remaining
 
-- **Phase 2** — models, storage (Markdown serialize/parse, CRUD, stable
-  filenames, atomic writes), session (incl. `append_transcript_block`),
-  search, preferences persistence; full unit tests.
 - **Phase 3** — native window + three columns, create/select/edit, autosave,
   search, categories, reload-on-restart.
 - **Phase 4** — Copy Note, Append Test Transcript, Open File, Reveal in Finder,
@@ -74,7 +95,10 @@ Non-UI logic is AppKit-free and headlessly testable. Modules: `paths`,
 
 ## Known issues
 
-- None functional. UI modules are documented stubs pending Phase 3.
+- None functional. UI modules (`app`, `window`, `views/*`) are documented
+  stubs pending Phase 3; `theme.py` holds tokens only from Phase 5.
+- Transcript block text is treated as a single paragraph (no internal blank
+  lines) — sufficient for V1's timestamped chunks.
 
 ## Design fidelity gaps (agreed)
 
@@ -115,10 +139,16 @@ Phase 6.
 
 ## Exact next recommended task
 
-Begin **Phase 2**: implement `models.py` and `storage.py` with the Markdown
-format from PRD §12 (TDD), then `session.py` (`append_transcript_block`),
-`search.py`, and `preferences.py`, with `tests/` covering each. Keep everything
-AppKit-free and testable headlessly. **Stop for review at the end of Phase 2.**
+Begin **Phase 3** (native UI): NSApplication lifecycle + main menu (Cmd+N/F/S/O)
+in `app.py`; a native window with transparent titlebar / full-size content view
+and real traffic lights hosting a three-column `NSSplitView` in `window.py`;
+then `views/sidebar.py`, `views/note_list.py`, `views/editor.py` wired to a
+`NoteStore`. Deliver create/select/edit, debounced autosave, search, categories,
+and reload-on-restart. Consume the Phase 2 API — do not reimplement storage in
+the UI. **Stop for review at the end of Phase 3.**
+
+Phase 3 will add an `NSUserDefaults`-backed `PreferencesBackend` implementing
+the `get/set/delete` protocol from `preferences.py`.
 
 ## Guardrails (for any continuing agent)
 

@@ -16,13 +16,29 @@
 
 | Module | Responsibility |
 | --- | --- |
-| `paths.py` | Canonical app/notes directories; folder creation. |
-| `models.py` | `Note` data structures. |
-| `storage.py` | Markdown serialize/parse; note file CRUD; stable slug filenames; atomic writes. |
-| `session.py` | Note/session operations; `append_transcript_block(note_id, text, timestamp)`. |
-| `search.py` | Title + body filtering and match metadata for highlighting. |
-| `preferences.py` | Persisted theme + last-open note over an injectable backend (dict in tests, NSUserDefaults in the app). |
-| `theme.py` | Storm Blue / Light / Deep Dark semantic token sets. |
+| `errors.py` | Domain/storage exception hierarchy (input errors vs. storage failures). |
+| `paths.py` | Canonical app/notes directories; injectable override; explicit folder creation (no import-time side effects). |
+| `models.py` | `Note` / `TranscriptBlock`, categories, tz-aware timestamps, transcript-timestamp normalization. |
+| `storage.py` | Deterministic Markdown serialize; lenient parse; slug + stable filenames with collision handling; atomic writes; read/list. |
+| `session.py` | `NoteStore`: CRUD, `append_transcript_block(note_id, text, timestamp)`, `append_test_transcript`; injectable clock and delete strategy. |
+| `search.py` | Case-insensitive Unicode search over title/body/transcript + independent category filter; match spans for highlighting. |
+| `preferences.py` | Persisted theme + last-open note/category over an injectable backend (dict in tests, NSUserDefaults in the app), with safe fallbacks. |
+| `theme.py` | Storm Blue / Light / Deep Dark semantic token sets (Phase 5). |
+
+### Key seams (for testing and Phase 3/4)
+
+- `NoteStore(notes_dir=..., clock=..., delete_strategy=...)` — tests inject a
+  temp dir, a fake clock, and a recording delete strategy; Phase 4 injects a
+  "move to macOS Trash" strategy.
+- `PreferencesBackend` protocol (`get`/`set`/`delete`) — `InMemoryBackend` in
+  tests; an `NSUserDefaults` adapter in Phase 3.
+
+### Write-path vs. read-path validation
+
+User-facing APIs (model construction, `create_note`, `update_category`,
+preferences setters) validate strictly and raise. Parsing files off disk is
+**lenient**: malformed metadata falls back to safe defaults so a note's body is
+never lost.
 
 ### AppKit (UI)
 
