@@ -4,15 +4,22 @@
 from __future__ import annotations
 
 import os
+import zipfile
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from AppKit import NSApplication, NSButton, NSMenuItem
+from AppKit import NSApplication, NSButton, NSMenuItem, NSPasteboard
 from Foundation import NSDate, NSRunLoop, NSUserDefaults
 
 from stormpad.app import _build_menu
 from stormpad.block_parser import parse_blocks
 from stormpad.blocks import BlockType
+from stormpad.dragdrop import (
+    NOTE_PASTEBOARD_TYPE,
+    PROJECT_PASTEBOARD_TYPE,
+    encode_drag_payload,
+)
+from stormpad.models import UNFILED_PROJECT_ID
 from stormpad.session import NoteStore
 from stormpad.window import MainController
 
@@ -30,12 +37,36 @@ def settle() -> None:
     )
 
 
+class DraggingInfo:
+    """Minimal UUID-only native dragging-info stand-in for deterministic smoke."""
+
+    def __init__(self, pasteboard, location):
+        self._pasteboard = pasteboard
+        self._location = location
+
+    def draggingPasteboard(self):
+        return self._pasteboard
+
+    def draggingLocation(self):
+        return self._location
+
+
+def drag_info(pasteboard_type: str, raw: str, row, *, y: float) -> DraggingInfo:
+    pasteboard = NSPasteboard.pasteboardWithUniqueName()
+    pasteboard.declareTypes_owner_([pasteboard_type], None)
+    assert pasteboard.setString_forType_(raw, pasteboard_type)
+    location = row.convertPoint_toView_((12.0, y), None)
+    return DraggingInfo(pasteboard, location)
+
+
 def main() -> int:
     suite = "com.stormpad.StormPad.NativeInteractionSmoke"
     os.environ["STORMPAD_DEFAULTS_SUITE"] = suite
     try:
         with TemporaryDirectory(prefix="stormpad-native-smoke-") as temporary:
-            store = NoteStore(temporary)
+            os.environ["STORMPAD_SHARE_PREPARE_ONLY"] = "1"
+            os.environ["STORMPAD_SHARE_DIR"] = str(Path(temporary) / "ShareExports")
+            store = NoteStore(Path(temporary) / "Notes")
             note = store.create_note("Native interaction smoke")
             note.body = "First block.\n\nSecond block."
             store.save_note(note)
@@ -59,6 +90,23 @@ def main() -> int:
                 "Help",
                 "Development",
             ]
+            file_menu = next(
+                main_menu.itemAtIndex_(index).submenu()
+                for index in range(main_menu.numberOfItems())
+                if str(main_menu.itemAtIndex_(index).submenu().title()) == "File"
+            )
+            assert any(
+                str(file_menu.itemAtIndex_(index).title()) == "Share Note…"
+                for index in range(file_menu.numberOfItems())
+            )
+            assert not controller._share_button.isHidden()
+            assert str(controller._share_button.toolTip()) == "Share Note"
+            assert str(controller._share_button.accessibilityLabel()) == "Share Note"
+            note_writer = controller._note_list.tableView_pasteboardWriterForRow_(
+                controller._note_list._table,
+                0,
+            )
+            assert note_writer.stringForType_(NOTE_PASTEBOARD_TYPE) is not None
             format_menu = next(
                 main_menu.itemAtIndex_(index).submenu()
                 for index in range(main_menu.numberOfItems())
@@ -305,23 +353,197 @@ def main() -> int:
             assert reloaded.transcript_visible is True
             assert len(reloaded.transcript) == 2
 
-            project = store.create_project("Build")
+            build = store.create_project("Build")
+            stormpad_project = store.create_project("StormPad")
+            wisperflow_project = store.create_project("WisperFlow")
+            controller._prefs.project_order = [
+                build.id,
+                stormpad_project.id,
+                wisperflow_project.id,
+            ]
             controller._apply_filter()
-            assert project.id in controller._sidebar._rows
-            controller._on_project(project.id)
+            assert all(
+                project.id in controller._sidebar._rows
+                for project in (build, stormpad_project, wisperflow_project)
+            )
+            build_row_before_drag = controller._sidebar._rows[build.id]
+            assert build_row_before_drag.drag_kind == "project"
+            assert "drag source" in str(
+                build_row_before_drag.accessibilityLabel()
+            )
+            assert not hasattr(build_row_before_drag, "_drag_handle")
+            assert build_row_before_drag.hitTest_((40.0, 17.0)) is build_row_before_drag
+
+            target_row = controller._sidebar._rows[wisperflow_project.id]
+            project_drag = drag_info(
+                PROJECT_PASTEBOARD_TYPE,
+                encode_drag_payload(
+                    "project",
+                    build.id,
+                    source_project_id=None,
+                    source_index=0,
+                ),
+                target_row,
+                y=32.0,
+            )
+            assert controller._sidebar.perform_drop(target_row, project_drag)
+            settle()
+            assert controller._prefs.project_order == [
+                stormpad_project.id,
+                wisperflow_project.id,
+                build.id,
+            ]
+            controller._editor._body.undoManager().undo()
+            settle()
+            assert controller._prefs.project_order == [
+                build.id,
+                stormpad_project.id,
+                wisperflow_project.id,
+            ]
+            controller._editor._body.undoManager().redo()
+            settle()
+            assert controller._prefs.project_order == [
+                stormpad_project.id,
+                wisperflow_project.id,
+                build.id,
+            ]
+            order_before_click = list(controller._prefs.project_order)
+            controller._sidebar._rows[stormpad_project.id].mouseDown_(None)
+            assert controller._project_id == stormpad_project.id
+            assert controller._prefs.project_order == order_before_click
+
+            attachment_directory = managed_paths[0].parent
+            controller._on_project(UNFILED_PROJECT_ID)
+            controller._on_note_selected(note.id)
+            stormpad_row = controller._sidebar._rows[stormpad_project.id]
+            note_drag = drag_info(
+                NOTE_PASTEBOARD_TYPE,
+                encode_drag_payload(
+                    "note",
+                    note.id,
+                    source_project_id=UNFILED_PROJECT_ID,
+                    source_index=0,
+                ),
+                stormpad_row,
+                y=17.0,
+            )
+            assert controller._sidebar.perform_drop(stormpad_row, note_drag)
+            settle()
+            moved = store.load_note(note.id)
+            assert moved.project_id == stormpad_project.id
+            assert moved.path.parent == stormpad_project.path
+            assert attachment_directory.exists()
+
+            build_row = controller._sidebar._rows[build.id]
+            between_projects = drag_info(
+                NOTE_PASTEBOARD_TYPE,
+                encode_drag_payload(
+                    "note",
+                    note.id,
+                    source_project_id=stormpad_project.id,
+                    source_index=0,
+                ),
+                build_row,
+                y=17.0,
+            )
+            assert controller._sidebar.perform_drop(build_row, between_projects)
+            settle()
+            assert store.load_note(note.id).project_id == build.id
+            organization_undo = controller._controller_undo_manager()
+            assert str(organization_undo.undoActionName()) == "Move Note", (
+                organization_undo.undoActionName(),
+                organization_undo.canUndo(),
+            )
+            organization_undo.undo()
+            settle()
+            undo_project_id = store.load_note(note.id).project_id
+            assert undo_project_id == stormpad_project.id, undo_project_id
+            controller._editor._body.undoManager().redo()
+            settle()
+            assert store.load_note(note.id).project_id == build.id
+
+            unfiled_row = controller._sidebar._rows[UNFILED_PROJECT_ID]
+            to_unfiled = drag_info(
+                NOTE_PASTEBOARD_TYPE,
+                encode_drag_payload(
+                    "note",
+                    note.id,
+                    source_project_id=build.id,
+                    source_index=0,
+                ),
+                unfiled_row,
+                y=17.0,
+            )
+            assert controller._sidebar.perform_drop(unfiled_row, to_unfiled)
+            unfiled = store.load_note(note.id)
+            assert unfiled.project_id is None
+            assert unfiled.path.parent == store.notes_dir
+            assert attachment_directory.exists()
+            assert controller._sidebar._counts[UNFILED_PROJECT_ID] >= 1
+
+            controller._on_project(build.id)
             controller.newNote_(None)
             project_note = store.load_note(controller._current_id)
-            assert project_note.project_id == project.id
+            assert project_note.project_id == build.id
             controller.removeNoteFromProject_(None)
             assert store.load_note(project_note.id).project_id is None
 
+            controller._on_project(UNFILED_PROJECT_ID)
+            controller._on_note_selected(note.id)
+            controller._editor._title.setStringValue_("Shared Current Note")
+            controller._on_title_edited("Shared Current Note")
+            controller.shareNote_(None)
+            shared_note = controller._last_share_path
+            assert shared_note is not None and shared_note.exists()
+            assert store.notes_dir not in shared_note.parents
+            shared_text = shared_note.read_text(encoding="utf-8")
+            assert "Shared Current Note" in shared_text
+            assert note.id not in shared_text
+            assert controller._sharing_picker is not None
+
+            packaged = store.create_note("Build package", project_id=build.id)
+            packaged.body = "## Package\n\n- [x] Included"
+            store.save_note(packaged)
+            original_package = packaged.path.read_bytes()
+            controller.shareProject_(menu_sender(build.id))
+            shared_project = controller._last_share_path
+            assert shared_project is not None and shared_project.suffix == ".zip"
+            assert shared_project.exists()
+            with zipfile.ZipFile(shared_project) as archive:
+                names = archive.namelist()
+                assert any(name.endswith("/README.txt") for name in names)
+                assert any(name.endswith("/build-package.md") for name in names)
+                assert all(".stormpad-project.json" not in name for name in names)
+            assert packaged.path.read_bytes() == original_package
+
+            project_menu = controller._sidebar._rows[build.id].project_context_menu()
+            project_titles = [
+                str(project_menu.itemAtIndex_(index).title())
+                for index in range(project_menu.numberOfItems())
+            ]
+            assert "Share Project…" in project_titles
+            assert "Move Project Up" in project_titles
+            assert "Move Project Down" in project_titles
+
             controller.cleanup()
             controller._window.close()
+            reopened = MainController.alloc().initWithStore_(store)
+            assert [project.id for project in reopened._projects()] == [
+                stormpad_project.id,
+                wisperflow_project.id,
+                build.id,
+            ]
+            assert store.load_note(note.id).project_id is None
+            reopened.cleanup()
+            reopened._window.close()
     finally:
+        os.environ.pop("STORMPAD_SHARE_PREPARE_ONLY", None)
+        os.environ.pop("STORMPAD_SHARE_DIR", None)
         NSUserDefaults.standardUserDefaults().removePersistentDomainForName_(suite)
     print(
         "NATIVE INTERACTION SMOKE OK: menus, swatches, settings, "
-        "selection conversion, full-note delete, projects, transcript, undo, redo, autosave, reload"
+        "selection conversion, full-note delete, sharing, project reorder, "
+        "note drag, transcript, undo, redo, autosave, reload"
     )
     return 0
 

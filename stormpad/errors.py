@@ -57,6 +57,10 @@ class ProjectNotEmptyError(StorageError):
     """A populated project was asked to be deleted without moving its notes."""
 
 
+class ShareExportError(StorageError):
+    """A temporary note or project share export could not be prepared safely."""
+
+
 class AtomicWriteError(StorageError):
     """An atomic write failed; the destination was left untouched."""
 

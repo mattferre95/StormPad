@@ -29,11 +29,13 @@ from AppKit import (
     NSImageOnly,
     NSMenu,
     NSMenuItem,
+    NSMinYEdge,
     NSModalResponseOK,
     NSOpenPanel,
     NSPasteboard,
     NSPasteboardTypeString,
     NSSavePanel,
+    NSSharingServicePicker,
     NSSplitViewController,
     NSSplitViewDividerStyleThin,
     NSSplitViewItem,
@@ -56,11 +58,13 @@ from Foundation import NSURL, NSMakeRect, NSObject, NSRunLoop, NSRunLoopCommonMo
 from . import attachments, paths
 from .blocks import Block, BlockType, InlineRun
 from .defaults import UserDefaultsBackend
+from .dragdrop import move_project_id, reorder_project_ids, share_menu_options
 from .errors import (
     InvalidProjectError,
     NoteNotFoundError,
     NotesDirectoryError,
     ProjectNotFoundError,
+    ShareExportError,
     StorageError,
 )
 from .exporter import export_note_txt, note_to_plain_text
@@ -74,6 +78,7 @@ from .models import (
 from .preferences import Preferences
 from .search import filter_by_category, filter_by_project, search_notes
 from .session import NoteStore
+from .sharing import ShareExportManager
 from .speech import SpeechController, SpeechUnavailableError
 from .theme import get_theme, menu_state
 from .uihelpers import (
@@ -141,6 +146,13 @@ class MainController(NSObject):
             cancel=self._cancel_timer,
         )
         self._speech = SpeechController()
+        self._share_exports = ShareExportManager(
+            self._store.notes_dir,
+            cache_dir=os.environ.get("STORMPAD_SHARE_DIR") or None,
+        )
+        self._share_exports.cleanup_expired()
+        self._sharing_picker = None
+        self._last_share_path: Path | None = None
         self._action_buttons: list = []
         self._note_info_menu = None
         self._settings = SettingsController.alloc().initWithOnTheme_onBlockControls_onReveal_(
@@ -167,7 +179,7 @@ class MainController(NSObject):
             NSTimer.scheduledTimerWithTimeInterval_repeats_block_(
                 0.25,
                 False,
-                lambda timer: self.showNoteInfo_(self._action_buttons[0]),
+                lambda timer: self.showNoteInfo_(self._action_buttons[1]),
             )
         if os.environ.get("STORMPAD_SHOW_EXPORT"):
             NSTimer.scheduledTimerWithTimeInterval_repeats_block_(
@@ -197,9 +209,32 @@ class MainController(NSObject):
             NSTimer.scheduledTimerWithTimeInterval_repeats_block_(
                 0.45, False, lambda timer: self._apply_delete_all_dev_hook()
             )
+        if os.environ.get("STORMPAD_SHOW_SHARE_NOTE"):
+            try:
+                share_delay = float(os.environ.get("STORMPAD_SHARE_DELAY", "0.65"))
+            except ValueError:
+                share_delay = 0.65
+            NSTimer.scheduledTimerWithTimeInterval_repeats_block_(
+                share_delay, False, lambda timer: self.shareNote_(self._share_button)
+            )
+        if os.environ.get("STORMPAD_SHOW_SHARE_PROJECT"):
+            NSTimer.scheduledTimerWithTimeInterval_repeats_block_(
+                0.25, False, lambda timer: self._apply_share_project_dev_hook()
+            )
+        if os.environ.get("STORMPAD_SHOW_PROJECT_CONTEXT"):
+            NSTimer.scheduledTimerWithTimeInterval_repeats_block_(
+                0.25, False, lambda timer: self._show_project_context_dev_menu()
+            )
+        if (
+            os.environ.get("STORMPAD_DRAG_PROJECT")
+            or os.environ.get("STORMPAD_DRAG_NOTE_OVER")
+        ):
+            NSTimer.scheduledTimerWithTimeInterval_repeats_block_(
+                0.35, False, lambda timer: self._apply_sidebar_drag_dev_hook()
+            )
         if os.environ.get("STORMPAD_CAPTURE_PATH"):
             capture_timer = NSTimer.timerWithTimeInterval_repeats_block_(
-                0.8, False, lambda timer: self._capture_dev_windows()
+                1.1, False, lambda timer: self._capture_dev_windows()
             )
             NSRunLoop.mainRunLoop().addTimer_forMode_(
                 capture_timer, NSRunLoopCommonModes
@@ -315,13 +350,17 @@ class MainController(NSObject):
         info_b = self._toolbar_button(
             "Open Note Info", "showNoteInfo:", "ellipsis.circle", icon_only=True
         )
+        share_b = self._toolbar_button(
+            "Share Note", "shareNote:", "square.and.arrow.up", icon_only=True
+        )
         new_b = self._toolbar_button("New Note", "newNote:", "plus", primary=True)
-        self._action_buttons = [info_b]
+        self._share_button = share_b
+        self._action_buttons = [share_b, info_b]
 
         stack = NSStackView.alloc().init()
         stack.setOrientation_(NSUserInterfaceLayoutOrientationHorizontal)
         stack.setSpacing_(7.0)
-        for button in [collapse_b, info_b, new_b]:
+        for button in [collapse_b, share_b, info_b, new_b]:
             stack.addArrangedSubview_(button)
         add(header, stack)
         stack.trailingAnchor().constraintEqualToAnchor_constant_(
@@ -337,6 +376,8 @@ class MainController(NSObject):
             on_project=self._on_project,
             search_delegate=self,
             project_action_target=self,
+            on_reorder_project=self._on_reorder_project,
+            on_move_note=self._on_note_drop,
         )
         self._note_list = NoteList.alloc().initWithPalette_onSelect_onCollapse_(
             self._palette, self._on_note_selected, self._toggle_notes_panel
@@ -443,7 +484,13 @@ class MainController(NSObject):
     @objc.python_method
     def _apply_project_dev_hook(self) -> None:
         requested = os.environ.get("STORMPAD_SELECT_PROJECT", "")
-        project = next(
+        project = self._project_for_dev_value(requested)
+        if project is not None:
+            self._on_project(project.id)
+
+    @objc.python_method
+    def _project_for_dev_value(self, requested: str):
+        return next(
             (
                 item
                 for item in self._projects()
@@ -451,8 +498,59 @@ class MainController(NSObject):
             ),
             None,
         )
-        if project is not None:
-            self._on_project(project.id)
+
+    @objc.python_method
+    def _apply_share_project_dev_hook(self) -> None:
+        requested = os.environ.get("STORMPAD_SHOW_SHARE_PROJECT", "")
+        project = self._project_for_dev_value(requested)
+        if project is None:
+            return
+        sender = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+            "Share Project", None, ""
+        )
+        sender.setRepresentedObject_(project.id)
+        self.shareProject_(sender)
+
+    @objc.python_method
+    def _show_project_context_dev_menu(self) -> None:
+        requested = os.environ.get("STORMPAD_SHOW_PROJECT_CONTEXT", "")
+        project = self._project_for_dev_value(requested)
+        if project is None:
+            return
+        row = self._sidebar._rows.get(project.id)
+        if row is None:
+            return
+        menu = row.project_context_menu()
+        menu.popUpMenuPositioningItem_atLocation_inView_(
+            None,
+            (0.0, 0.0),
+            row,
+        )
+
+    @objc.python_method
+    def _apply_sidebar_drag_dev_hook(self) -> None:
+        project_name = os.environ.get("STORMPAD_DRAG_PROJECT", "")
+        if project_name:
+            project = self._project_for_dev_value(project_name)
+            if project is not None:
+                try:
+                    insertion = int(
+                        os.environ.get(
+                            "STORMPAD_PROJECT_INSERTION_INDEX",
+                            str(len(self._projects())),
+                        )
+                    )
+                except ValueError:
+                    insertion = len(self._projects())
+                self._sidebar.show_project_drag_preview(project.id, insertion)
+        note_target = os.environ.get("STORMPAD_DRAG_NOTE_OVER", "")
+        if note_target:
+            if note_target == UNFILED:
+                self._sidebar.show_note_drop_preview(None)
+            else:
+                project = self._project_for_dev_value(note_target)
+                if project is not None:
+                    self._sidebar.show_note_drop_preview(project.id)
 
     @objc.python_method
     def _apply_note_dev_hook(self) -> None:
@@ -475,7 +573,7 @@ class MainController(NSObject):
             return
         menu = self._move_to_project_item(note).submenu()
         menu.popUpMenuPositioningItem_atLocation_inView_(
-            None, (0.0, 0.0), self._action_buttons[0]
+            None, (0.0, 0.0), self._action_buttons[1]
         )
 
     @objc.python_method
@@ -825,6 +923,74 @@ class MainController(NSObject):
         self._prefs.projects_collapsed = not self._prefs.projects_collapsed
         self._apply_filter()
 
+    @objc.python_method
+    def _controller_undo_manager(self):
+        return self._editor._body.undoManager()
+
+    @objc.python_method
+    def _register_controller_undo(
+        self,
+        selector: str,
+        payload,
+        action_name: str,
+    ) -> None:
+        manager = self._controller_undo_manager()
+        manager.registerUndoWithTarget_selector_object_(
+            self,
+            selector,
+            payload,
+        )
+        manager.setActionName_(action_name)
+
+    @objc.python_method
+    def _set_project_order(
+        self,
+        order: list[str],
+        *,
+        register_undo: bool,
+    ) -> bool:
+        current = [project.id for project in self._projects()]
+        if len(order) != len(current) or set(order) != set(current):
+            return False
+        if order == current:
+            return False
+        self._prefs.project_order = list(order)
+        self._apply_filter()
+        if register_undo:
+            self._register_controller_undo(
+                "restoreProjectOrder:",
+                current,
+                "Reorder Project",
+            )
+        return True
+
+    @objc.python_method
+    def _on_reorder_project(self, project_id: str, insertion_index: int) -> bool:
+        current = [project.id for project in self._projects()]
+        updated = reorder_project_ids(current, project_id, insertion_index)
+        return self._set_project_order(updated, register_undo=True)
+
+    def restoreProjectOrder_(self, order):  # noqa: N802
+        self._set_project_order(list(order), register_undo=True)
+
+    @objc.python_method
+    def _move_project_by(self, project_id: str, offset: int) -> bool:
+        current = [project.id for project in self._projects()]
+        updated = move_project_id(current, project_id, offset)
+        return self._set_project_order(updated, register_undo=True)
+
+    @objc.IBAction
+    def moveProjectUp_(self, sender):  # noqa: N802
+        project_id = self._represented_string(sender)
+        if project_id is not None:
+            self._move_project_by(project_id, -1)
+
+    @objc.IBAction
+    def moveProjectDown_(self, sender):  # noqa: N802
+        project_id = self._represented_string(sender)
+        if project_id is not None:
+            self._move_project_by(project_id, 1)
+
     @objc.IBAction
     def newNoteInProject_(self, sender):  # noqa: N802
         project_id = self._represented_string(sender)
@@ -879,6 +1045,34 @@ class MainController(NSObject):
         NSWorkspace.sharedWorkspace().activateFileViewerSelectingURLs_(
             [NSURL.fileURLWithPath_(str(project.path))]
         )
+
+    @objc.IBAction
+    def shareProject_(self, sender):  # noqa: N802
+        project_id = self._represented_string(sender)
+        if project_id is None and self._project_id not in (
+            None,
+            UNFILED_PROJECT_ID,
+        ):
+            project_id = self._project_id
+        if project_id is None:
+            return
+        self._autosave.flush()
+        try:
+            project = self._store.load_project(project_id)
+            exported = self._share_exports.export_project(
+                project,
+                self._store.list_notes(),
+            )
+        except (
+            ProjectNotFoundError,
+            ShareExportError,
+            StorageError,
+            OSError,
+        ) as exc:
+            self._alert("Could not share project", str(exc))
+            self._apply_filter()
+            return
+        self._present_share_picker(exported, sender)
 
     @objc.IBAction
     def deleteProject_(self, sender):  # noqa: N802
@@ -955,6 +1149,36 @@ class MainController(NSObject):
             self._editor.flash_status("Copied")
         else:
             self._alert("Copy failed", "Could not write the note to the clipboard.")
+
+    @objc.IBAction
+    def shareNote_(self, sender):  # noqa: N802
+        if self._current_id is None:
+            return
+        self._autosave.flush()
+        try:
+            note = self._store.load_note(self._current_id)
+            exported = self._share_exports.export_note(note)
+        except (NoteNotFoundError, ShareExportError, StorageError, OSError) as exc:
+            self._alert("Could not share note", str(exc))
+            return
+        self._present_share_picker(exported, sender)
+
+    @objc.python_method
+    def _present_share_picker(self, path: Path, sender) -> None:
+        """Present macOS's native picker without choosing or sending a service."""
+        self._last_share_path = Path(path)
+        picker = NSSharingServicePicker.alloc().initWithItems_(
+            [NSURL.fileURLWithPath_(str(path))]
+        )
+        self._sharing_picker = picker
+        if os.environ.get("STORMPAD_SHARE_PREPARE_ONLY"):
+            return
+        anchor = sender if sender is not None and hasattr(sender, "bounds") else self._share_button
+        picker.showRelativeToRect_ofView_preferredEdge_(
+            anchor.bounds(),
+            anchor,
+            NSMinYEdge,
+        )
 
     @objc.IBAction
     def appendTranscript_(self, sender):  # noqa: N802
@@ -1073,6 +1297,12 @@ class MainController(NSObject):
     @objc.python_method
     def _note_context_menu(self, note):
         menu = NSMenu.alloc().initWithTitle_("Note")
+        share = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+            "Share Note…", "shareNote:", ""
+        )
+        share.setTarget_(self)
+        menu.addItem_(share)
+        menu.addItem_(NSMenuItem.separatorItem())
         menu.addItem_(self._move_to_project_item(note))
         if note.project_id is not None:
             remove = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
@@ -1089,32 +1319,104 @@ class MainController(NSObject):
         if payload is None or "|" not in payload:
             return
         note_id, project_id = payload.split("|", 1)
-        self._autosave.flush()
         try:
-            moved = self._store.move_note_to_project(note_id, project_id)
+            self._move_note_to_project_internal(
+                note_id,
+                project_id,
+                register_undo=True,
+            )
         except (NoteNotFoundError, ProjectNotFoundError, StorageError, OSError) as exc:
             self._alert("Could not move note", str(exc))
             self._apply_filter()
-            return
-        self._current_id = moved.id
-        self._prefs.last_note_id = moved.id
-        self._apply_filter()
 
     @objc.IBAction
     def removeNoteFromProject_(self, sender):  # noqa: N802
         note_id = self._represented_string(sender) or self._current_id
         if note_id is None:
             return
-        self._autosave.flush()
         try:
-            moved = self._store.remove_note_from_project(note_id)
+            self._move_note_to_project_internal(
+                note_id,
+                None,
+                register_undo=True,
+            )
         except (NoteNotFoundError, StorageError, OSError) as exc:
             self._alert("Could not remove note from project", str(exc))
             self._apply_filter()
-            return
+
+    @objc.python_method
+    def _on_note_drop(self, note_id: str, project_id: str | None) -> bool:
+        try:
+            return self._move_note_to_project_internal(
+                note_id,
+                project_id,
+                register_undo=True,
+            )
+        except (
+            NoteNotFoundError,
+            ProjectNotFoundError,
+            StorageError,
+            OSError,
+        ) as exc:
+            self._alert("Could not move note", str(exc))
+            self._apply_filter()
+            return False
+
+    @objc.python_method
+    def _move_note_to_project_internal(
+        self,
+        note_id: str,
+        project_id: str | None,
+        *,
+        register_undo: bool,
+    ) -> bool:
+        """Flush, validate stable IDs, move atomically, then refresh selection."""
+        self._autosave.flush()
+        note = self._store.load_note(note_id)
+        if project_id is not None:
+            self._store.load_project(project_id)
+        source_project_id = note.project_id
+        if source_project_id == project_id:
+            return False
+        moved = self._store.move_note_to_project(note_id, project_id)
+        self._autosave.reset()
         self._current_id = moved.id
         self._prefs.last_note_id = moved.id
+        self._project_id = project_id or UNFILED_PROJECT_ID
+        self._category = ALL_NOTES
+        self._query = ""
+        self._sidebar.clear_search()
+        self._prefs.selected_project_id = self._project_id
+        self._prefs.last_category = ALL_NOTES
         self._apply_filter()
+        if register_undo:
+            source = source_project_id or UNFILED_PROJECT_ID
+            self._register_controller_undo(
+                "restoreNoteProject:",
+                f"{moved.id}|{source}",
+                "Move Note",
+            )
+        return True
+
+    def restoreNoteProject_(self, payload):  # noqa: N802
+        raw = str(payload)
+        if "|" not in raw:
+            return
+        note_id, project_id = raw.split("|", 1)
+        target = None if project_id == UNFILED_PROJECT_ID else project_id
+        try:
+            self._move_note_to_project_internal(
+                note_id,
+                target,
+                register_undo=True,
+            )
+        except (
+            NoteNotFoundError,
+            ProjectNotFoundError,
+            StorageError,
+            OSError,
+        ) as exc:
+            self._alert("Could not undo note move", str(exc))
 
     @objc.IBAction
     def showNoteInfo_(self, sender):  # noqa: N802
@@ -1160,6 +1462,7 @@ class MainController(NSObject):
             menu.addItem_(remove_project)
         menu.addItem_(NSMenuItem.separatorItem())
         for title, action in (
+            ("Share Note…", "shareNote:"),
             ("Rename Filename…", "renameFilename:"),
             ("Export as TXT…", "exportNoteTXT:"),
             ("Reveal in Finder", "revealInFinder:"),
@@ -1442,6 +1745,7 @@ class MainController(NSObject):
         name = str(item.action())
         note_actions = (
             "copyNote:",
+            "shareNote:",
             "appendTranscript:",
             "exportNoteTXT:",
             "renameFilename:",
@@ -1452,6 +1756,20 @@ class MainController(NSObject):
         )
         if name in note_actions:
             return self._current_id is not None
+        if name == "shareProject:":
+            project_id = self._represented_string(item)
+            if project_id is not None:
+                return any(
+                    project.id == project_id
+                    for project in self._projects()
+                )
+            return "project" in share_menu_options(
+                note_selected=self._current_id is not None,
+                project_selected=self._project_id not in (
+                    None,
+                    UNFILED_PROJECT_ID,
+                ),
+            )
         if name == "speakSelection:":
             return is_speakable(self._editor.selected_body_text())
         if name == "stopSpeaking:":
@@ -1517,6 +1835,7 @@ class MainController(NSObject):
         """Stop speech and flush pending edits (window close / app quit)."""
         self._speech.cleanup()
         self._autosave.flush()
+        self._share_exports.cleanup_expired()
 
     # -- Phase 4 action helpers ----------------------------------------------
 

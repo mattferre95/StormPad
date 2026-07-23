@@ -12,11 +12,14 @@ import objc
 from AppKit import (
     NSBezierPath,
     NSButton,
+    NSDragOperationMove,
+    NSDragOperationNone,
     NSFont,
     NSGraphicsContext,
     NSImageOnly,
     NSInsetRect,
     NSNoBorder,
+    NSPasteboardItem,
     NSScrollView,
     NSShadow,
     NSTableColumn,
@@ -27,6 +30,7 @@ from AppKit import (
 )
 from Foundation import NSIndexSet, NSMakeRect, NSObject
 
+from ..dragdrop import NOTE_PASTEBOARD_TYPE, encode_drag_payload
 from ..models import ALL_NOTES, Note, now_local
 from ..uihelpers import format_relative, preview_text
 from .controls import FlippedView, flipped_view, label, rounded_view, solid_view
@@ -114,6 +118,7 @@ class NoteList(NSObject):
         self._suppress = False
         self._collapsed = False
         self._menu_provider = None
+        self._dragging_note_id: str | None = None
         self._build()
         return self
 
@@ -161,6 +166,9 @@ class NoteList(NSObject):
         table.setIntercellSpacing_((0.0, 2.0))
         table.setDataSource_(self)
         table.setDelegate_(self)
+        table.setAccessibilityLabel_("Notes, rows are drag sources")
+        table.setDraggingSourceOperationMask_forLocal_(NSDragOperationMove, True)
+        table.setDraggingSourceOperationMask_forLocal_(NSDragOperationNone, False)
         column = NSTableColumn.alloc().initWithIdentifier_("note")
         column.setResizingMask_(1)  # NSTableColumnAutoresizingMask
         table.addTableColumn_(column)
@@ -251,6 +259,38 @@ class NoteList(NSObject):
     def tableView_shouldSelectRow_(self, table, row):  # noqa: N802
         return True
 
+    def tableView_pasteboardWriterForRow_(self, table, row):  # noqa: N802
+        if not 0 <= int(row) < len(self._notes):
+            return None
+        note = self._notes[int(row)]
+        raw = encode_drag_payload(
+            "note",
+            note.id,
+            source_project_id=note.project_id,
+            source_index=int(row),
+        )
+        item = NSPasteboardItem.alloc().init()
+        item.setString_forType_(raw, NOTE_PASTEBOARD_TYPE)
+        return item
+
+    def tableView_draggingSession_willBeginAtPoint_forRowIndexes_(  # noqa: N802
+        self, table, session, point, row_indexes
+    ):
+        index = int(row_indexes.firstIndex())
+        self._dragging_note_id = (
+            self._notes[index].id if 0 <= index < len(self._notes) else None
+        )
+        if self._dragging_note_id is not None:
+            table.setAccessibilityLabel_(
+                f"Dragging note {self._notes[index].title or 'Untitled Note'}"
+            )
+
+    def tableView_draggingSession_endedAtPoint_operation_(  # noqa: N802
+        self, table, session, point, operation
+    ):
+        self._dragging_note_id = None
+        table.setAccessibilityLabel_("Notes, rows are drag sources")
+
     def tableViewSelectionDidChange_(self, notification):  # noqa: N802
         if self._suppress:
             return
@@ -266,6 +306,9 @@ class NoteList(NSObject):
     def _make_cell(self, note: Note) -> NSView:
         p = self._palette
         cell: FlippedView = flipped_view()
+        cell.setAccessibilityLabel_(
+            f"Note {note.title or 'Untitled Note'}, drag source"
+        )
 
         selected = note.id == self._selected_id
         title = add(

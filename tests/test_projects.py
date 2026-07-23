@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 
 from stormpad import attachments, storage
+from stormpad import session as session_module
 from stormpad.block_parser import parse_blocks
 from stormpad.blocks import BlockType
 from stormpad.errors import ProjectNotEmptyError
@@ -150,3 +151,36 @@ def test_populated_project_requires_move_to_unfiled_and_preserves_notes(store):
     assert reloaded.project_id is None
     assert reloaded.path.parent == store.notes_dir
     assert not project.path.exists()
+
+
+def test_same_project_move_is_noop_without_duplicate_file(store):
+    project = store.create_project("Build")
+    note = store.create_note("Only once", project_id=project.id)
+    before = note.path.read_bytes()
+    moved = store.move_note_to_project(note.id, project.id)
+    assert moved.path == note.path
+    assert moved.path.read_bytes() == before
+    assert [path.name for path in project.path.glob("*.md")] == ["only-once.md"]
+
+
+def test_failed_move_preserves_source_path_content_and_membership(
+    store,
+    monkeypatch,
+):
+    project = store.create_project("Build")
+    note = store.create_note("Safe source")
+    source_path = note.path
+    source_bytes = source_path.read_bytes()
+
+    def fail_move(source, destination):
+        raise OSError("simulated move failure")
+
+    monkeypatch.setattr(session_module.os, "replace", fail_move)
+    with pytest.raises(OSError, match="simulated"):
+        store.move_note_to_project(note.id, project.id)
+    assert source_path.exists()
+    assert source_path.read_bytes() == source_bytes
+    reloaded = store.load_note(note.id)
+    assert reloaded.path == source_path
+    assert reloaded.project_id is None
+    assert not (project.path / source_path.name).exists()
