@@ -15,7 +15,7 @@ writing canvas. Notes stay as human-readable Markdown on your Mac; attachments
 are copied into local managed folders. There are no accounts, cloud sync,
 telemetry, external AI services, or web views.
 
-> **Status:** Phase 5.1.1 interaction stabilization is implemented on
+> **Status:** Phase 5.1.2 project folders and native selection behavior are implemented on
 > `feature/notion-editor` and ready for hands-on review. Phase 6 packaging has
 > not started: there is no final `.app`, `.icns`, `.dmg`, signing,
 > notarization, release, or landing page yet.
@@ -28,14 +28,18 @@ telemetry, external AI services, or web views.
   title-to-body keyboard transition.
 - Native block editor for Text, Heading 1–3, To-do, Bulleted list, Numbered
   list, Quote, Divider, Link, Image, File, and optional Transcript.
-- Pointer-following `+` and drag controls in a dedicated non-overlapping gutter,
-  with native vertical drag reordering and an insertion line.
-- Functional native block commands with hovered-block routing,
-  Option-insert-above, empty-block conversion, undo, autosave, and relaunch
-  round trips.
+- One pointer-following `+` in a dedicated non-overlapping gutter. Block drag
+  controls, drop targets, insertion indicators, and Move Up/Down UI are absent.
+- Selection-aware block commands convert one or many selected paragraphs in
+  place; collapsed-caret commands retain insertion behavior.
+- Editor-wide Cmd+A/Delete clears title, body, attachment references, and
+  Transcript presentation as one undoable action without deleting the note or
+  managed attachment files.
 - Bold, italic, underline, link, curated text colors, and curated highlights,
-  with keyboard shortcuts and a contextual formatting toolbar whose color
-  controls use accessible semantic swatches.
+  with keyboard shortcuts plus explicit Clear and Clear / Transparent semantic
+  swatches.
+- Local filesystem-backed Projects alongside categories, with All Notes and
+  Unfiled filters, note counts, safe note movement, and project-aware creation.
 - Debounced atomic autosave, native undo/redo, search, categories, restored
   selection, Copy Note, Open File, Reveal in Finder, Delete to Trash, and
   Speak Selection.
@@ -53,7 +57,7 @@ telemetry, external AI services, or web views.
   open/reveal/rename/export/settings actions.
 - Deterministic plain-text export through a native save panel.
 - Complete native application menus and a reusable Settings window for theme,
-  hover controls, and local storage locations.
+  the Add Block hover control, and local storage locations.
 - Storm Blue, Light, and Deep Dark themes with live switching.
 
 ## Run
@@ -95,7 +99,11 @@ and visual launches require an active macOS display session.
 ```text
 ~/Documents/StormPad/
 ├── Notes/
-│   └── my-business-plan.md
+│   ├── my-business-plan.md
+│   └── Projects/
+│       └── build/
+│           ├── .stormpad-project.json
+│           └── editor-plan.md
 └── Attachments/
     └── <stable-note-id>/
         ├── moodboard.png
@@ -134,12 +142,13 @@ attachment policy, filename behavior, and legacy migration.
 | **Light** | Cool white canvas with soft gray-blue selection. |
 | **Deep Dark** | Near-black zinc surfaces for quiet focus. |
 
-Switch from **View ▸ Theme** or **StormPad ▸ Settings…**. Theme,
-collapsed-note-list state, and the hover-control preference persist.
+Switch from **View ▸ Theme** or **StormPad ▸ Settings…**. Theme, selected
+project, project ordering/collapse, collapsed-note-list state, and the
+hover-control preference persist.
 
 ## Screenshots
 
-Sanitized Phase 5.1.1 fixtures and reproducible capture commands are documented
+Sanitized Phase 5.1.2 fixtures and reproducible capture commands are documented
 in [docs/screenshots/README.md](docs/screenshots/README.md). Do not capture real
 personal notes for repository screenshots.
 
@@ -156,8 +165,8 @@ stormpad/
   block_parser.py            Markdown to blocks
   block_serializer.py        blocks to deterministic safe Markdown
   attachments.py             local managed attachment policy
-  models.py / storage.py     note model, envelope, identity, atomic file I/O
-  session.py                 CRUD and transcript integration seam
+  models.py / storage.py     notes, projects, identity, atomic local file I/O
+  session.py                 CRUD, movement, deletion safety, transcript seam
   preferences.py / theme.py  persisted state and three complete palettes
   exporter.py                deterministic readable TXT output
   views/block_editor.py      native writing page, gutter and formatting
@@ -174,8 +183,8 @@ StormPad remains a standalone local-first notepad. This phase does not add
 recording, live transcription, AI writing, cloud storage, collaboration,
 arbitrary embeds, databases, or publishing.
 
-- **Phase 5.1.1 (current):** stabilize real editor interactions, native drag,
-  Transcript, Note Info/TXT export, menus, swatches, and Settings.
+- **Phase 5.1.2 (current):** project folders, selection-aware block conversion,
+  editor-wide deletion, clear formatting, and a simplified plus-only gutter.
 - **Phase 6 (next, after manual review):** generate the official `.icns`, build
   a standalone `StormPad.app`, install-test it from `/Applications`, and create
   a drag-to-Applications `.dmg`.

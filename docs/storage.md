@@ -9,7 +9,11 @@ managed attachments are ordinary files next to the notes directory.
 ~/Documents/StormPad/
 ├── Notes/
 │   ├── my-business-plan.md
-│   └── my-business-plan-2.md
+│   ├── my-business-plan-2.md
+│   └── Projects/
+│       └── build/
+│           ├── .stormpad-project.json
+│           └── editor-plan.md
 └── Attachments/
     └── 6a774f94-09f6-44f1-9e08-41fc0ddde477/
         ├── moodboard.png
@@ -56,6 +60,29 @@ rename stores `manual`. `Transcript-Block` is `expanded`, `collapsed`, or
 transcript block or content. `hidden` preserves existing transcript chunks
 without placing a Transcript container in the body. Unknown metadata fields
 before `## Notes` are preserved across a StormPad save.
+
+`Project-ID` is present while a note lives in a valid project. The real folder
+location remains authoritative; this metadata provides a stable relationship
+that does not depend on the folder slug.
+
+## Projects
+
+Each project directory contains `.stormpad-project.json` with a stable UUID,
+display name, created date, and updated date. Folder names are safe slugs;
+duplicate names receive `-2`, `-3`, and so on. Renaming changes the folder and
+metadata while preserving the project UUID, note UUIDs, and attachment
+directories.
+
+Moving a note into or out of a project moves its Markdown file, resolves
+filename collisions, and rewrites only managed relative attachment references
+for the new depth. Search and note loading scan root notes plus project folders.
+Malformed or future project metadata never makes contained Markdown disappear;
+such notes remain visible as unfiled/unknown-project content.
+
+Deleting an empty project sends its folder through the configured Trash
+strategy. A populated project cannot be deleted implicitly: the supported path
+moves every note to Unfiled first, collision-safely, then trashes the empty
+project folder.
 
 ## Block syntax
 
@@ -108,7 +135,8 @@ restores the previous file and mode.
 
 Imports are copied into `Attachments/<stable-note-id>/` through a same-directory
 temporary file. Markdown stores relative paths, so note filename changes do not
-affect attachments.
+affect attachments; project movement retargets those relative references
+without moving the attachment directory.
 
 Removing an image/file block does not delete the managed file; StormPad records
 the relative path in `.orphans.json` for a future conservative cleanup tool.

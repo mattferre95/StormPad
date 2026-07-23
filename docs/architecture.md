@@ -13,7 +13,7 @@
 - User data is changed only by an explicit create/edit/action. Loading a legacy
   file does not rewrite or rename it.
 
-## Phase 5.1.1 stabilized block editor
+## Phase 5.1.2 stabilized editor and local Projects
 
 ### Representation and selection
 
@@ -32,29 +32,29 @@ selection.
 The title remains a native `NSTextField` in the model, but its typography and
 keyboard transitions make it the visual first block of the page. Return from
 the title focuses the first body paragraph; Up at the start of the body returns
-to the title. The placeholder `Untitled` is never saved as content.
+to the title. The placeholder `Untitled` is never saved as content. Editor-wide
+Cmd+A selects the visual title and the entire body, and one Delete clears both
+plus Transcript UI state as one undoable/autosaved mutation. Managed attachment
+files are preserved.
 
 ### Block interaction and undo
 
 `GutterHoverView` is a dedicated transparent pointer tracker outside the text
 column. Pure `BlockGutterLayout` helpers model the text inset, gutter width,
 visible block rectangle, scroll offset, hit region, and control rectangles.
-The `+` and drag handle appear only beside the hovered semantic block, remain
-left of the 92-point text inset with explicit clearance, follow scrolling, and
-hide when the pointer leaves the block area. The hover-control preference may
-hide them, but native Format commands remain available.
+Only the `+` appears beside the hovered semantic block. It remains left of the
+92-point text inset with explicit clearance, follows scrolling, and hides when
+the pointer leaves the block area. There is no block drag handle, drop target,
+insertion indicator, or Move Up/Down UI. The hover preference may hide `+`, but
+native Format commands remain available.
 
-`+` captures the hovered block index before opening its retained native menu.
-Every visible command routes through `apply_block_command`: a non-empty block
-gets one insertion below (above with Option), while a compatible empty text
-block converts in place. The caret is restored to the editable portion and the
-same mutation path triggers undo and autosave.
-
-`BlockDragButton` uses AppKit dragging sessions with a private pasteboard type.
-The editor is a native drop destination, computes an insertion boundary, and
-draws a semantic-theme insertion line that cannot cross above the title.
-`reorder_blocks` preserves the entire `Block` value, including inline marks,
-checked/indent state, target/alt references, and Transcript placement.
+`+` captures the body selection before opening its retained native menu. When
+text is selected, paragraph commands convert every intersecting paragraph in
+place and preserve the exact text/runs without inserting a duplicate. A
+collapsed selection converts a compatible empty text paragraph or inserts one
+structural block below the active paragraph (above with Option). Format ▸ Block
+Type uses the same selection-aware path. The caret or selection is restored and
+the mutation participates in native undo and autosave.
 
 Text typing uses the standard `NSTextView` undo manager. Structural and
 formatting operations snapshot the affected attributed content and register
@@ -81,10 +81,11 @@ parser distinguishes them from unsupported raw HTML so leading formatting
 survives relaunch.
 
 The selection toolbar uses standard native controls. Its text/highlight color
-menus contain icon-only semantic swatches with accessible color labels,
-tooltips, a visible reset symbol, and a selected outline/checkmark. Standard
-`NSMenuItem` surfaces are used instead of custom menu-hosted views, avoiding
-AppKit drawing-lifecycle problems while preserving keyboard menu access.
+menus pair semantic swatches with visible labels. `Clear` removes a text-color
+mark and restores the current theme foreground; `Clear / Transparent` removes
+highlight markup and native background color. Mixed selections report mixed
+state. Standard `NSMenuItem` surfaces preserve keyboard menu access, selection
+checks, and predictable AppKit drawing.
 
 ### Autosave
 
@@ -128,16 +129,19 @@ choice. A failed move restores both the previous path and filename mode.
 
 ```text
 ~/Documents/StormPad/
-├── Notes/<title-slug>.md
+├── Notes/
+│   ├── <unfiled-title-slug>.md
+│   └── Projects/<project-slug>/<filed-title-slug>.md
 └── Attachments/<stable-note-id>/<sanitized-filename>
 ```
 
 An import copies to a temporary file inside the managed directory and then
 atomically moves it into place. Duplicate names receive numeric suffixes.
-Markdown stores paths relative to `Notes/`, so renaming a note does not break
-links. Image blocks use native `NSTextAttachment` previews; file blocks show a
-native compact line with filename, type, and size and open through
-`NSWorkspace` on double-click. Context actions reveal or remove the block.
+Markdown stores paths relative to each note, and project moves retarget those
+references without moving the stable-ID attachment directory. Image blocks use
+native `NSTextAttachment` previews; file blocks show a native compact line with
+filename, type, and size and open through `NSWorkspace` on double-click.
+Context actions reveal or remove the block.
 
 Removing a block records its path in `.orphans.json` and does not delete the
 underlying file. Deleting a note stages the note and its stable-ID attachment
@@ -152,9 +156,9 @@ visibility and collapse state. The editor renders a semantically themed native
 container inside the note flow. Its heading/collapse control and empty-state
 `Append Test Transcript` action remain interactive while its multiline
 timestamp/text rows are protected read-only attributed content. Context actions
-can collapse/expand, append test data, move/remove chunks, move the whole block,
-or remove its marker; inverse chunk operations register with the editor undo
-manager.
+can collapse/expand, append test data, remove chunks, or remove its marker;
+inverse chunk operations register with the editor undo manager. Further
+Transcript polish is deferred beyond Phase 5.1.2.
 
 A Transcript appears only when chunks exist, the user inserts the block, or
 Development ▸ Append Test Transcript is invoked. Removing/hiding the marker
@@ -164,12 +168,29 @@ does not discard legacy chunks. Body search continues to include
 No recording, live transcription, or WisperFlow integration exists in this
 phase.
 
-## Note actions, TXT export, menus, and Settings
+## Local Projects, note actions, TXT export, menus, and Settings
+
+Projects are real filesystem folders under `Notes/Projects/`, with one hidden
+`.stormpad-project.json` identity record in each folder. Notes remain ordinary
+Markdown and gain the known `Project-ID` metadata key while filed. `NoteStore`
+creates, loads, renames, and deletes projects; creates notes directly inside a
+project; and moves notes into or out of projects with collision-safe filenames.
+Project folder renames preserve project and note UUIDs. Managed attachment
+references are retargeted relative to the note's new folder while the stable
+attachment UUID and files remain unchanged.
+
+The sidebar exposes All Notes, Unfiled, and a collapsible Projects section above
+Categories. Project rows show folder icons and live counts. Project and note
+context menus provide create, rename, reveal, delete, move-to-project, and
+remove-from-project actions. Deleting a non-empty project never deletes its
+notes by default: the native confirmation path moves them to Unfiled first.
+Unknown legacy metadata is preserved, and root-level notes remain visible.
 
 The upper-right Note Info menu and the Note menu share the same current-note
-actions. Filename/path/date/category/word count are read from the selected
-stable-ID note after pending edits are flushed. Open, Reveal, Rename, Export,
-Settings, and Delete operate on that current path.
+actions. Project, filename, path, dates, category, and word count are read from
+the selected stable-ID note after pending edits are flushed. Open, Reveal,
+Rename, Export, Settings, Move to Project, Remove from Project, and Delete
+operate on that current path.
 
 `exporter.py` is AppKit-free. It converts every semantic block and transcript
 chunk into readable UTF-8 text, strips Markdown/StormPad inline markup and
@@ -182,8 +203,9 @@ Help, and Development menus. Validation reflects selection, current block and
 inline formatting, panel state, theme, and enabled actions.
 
 `views/settings.py` owns one reusable window. Appearance changes theme
-immediately, Editor controls the persisted hover preference, and Storage shows
-the StormPad root/Notes/Attachments paths with separate Reveal actions.
+immediately, Editor controls the persisted Add Block hover preference, and
+Storage shows the StormPad root/Notes/Attachments paths with separate Reveal
+actions.
 
 ## Layers
 
@@ -191,17 +213,17 @@ the StormPad root/Notes/Attachments paths with separate Reveal actions.
 
 | Module | Responsibility |
 | --- | --- |
-| `models.py` | Note/transcript structures, categories, timestamps, stable-ID state. |
-| `storage.py` | Note Markdown parsing/serialization, atomic writes, slugging, safe rename, legacy migration. |
+| `models.py` | Note/project/transcript structures, categories, timestamps, stable-ID state. |
+| `storage.py` | Note/project parsing/serialization, atomic writes, slugging, safe rename, legacy migration. |
 | `blocks.py` | Semantic blocks/inline marks and pure structural operations. |
 | `block_parser.py` | Supported Markdown → semantic blocks. |
 | `block_serializer.py` | Semantic blocks → safe deterministic Markdown. |
 | `attachments.py` | Managed paths, atomic imports, collision policy, orphan manifest. |
-| `session.py` | `NoteStore` CRUD, transcript seam, note+attachment deletion policy. |
+| `session.py` | Note/project CRUD, filing moves, transcript seam, note+attachment deletion policy. |
 | `exporter.py` | Semantic note → readable atomic UTF-8 TXT export. |
 | `paths.py` | Canonical/injectable local paths; no import-time creation. |
-| `search.py` | Unicode title/body/transcript search and category filtering. |
-| `preferences.py` | Theme, selection, category, note-list-collapse, and hover-control preferences. |
+| `search.py` | Unicode title/body/transcript search and category/project filtering. |
+| `preferences.py` | Theme, note/project selection, project order/collapse, note-list collapse, and Add Block preference. |
 | `theme.py` | Complete Storm Blue, Light, and Deep Dark semantic tokens. |
 | `uihelpers.py` | Pure previews, selection rules, autosave, and block UI-state helpers. |
 
@@ -210,13 +232,13 @@ the StormPad root/Notes/Attachments paths with separate Reveal actions.
 | Module | Responsibility |
 | --- | --- |
 | `app.py` | Application lifecycle and complete native application menu bar. |
-| `window.py` | Window/split controller, autosave, actions, validation, theme rebuild, Note Info/TXT. |
+| `window.py` | Window/split controller, autosave, project/note actions, validation, theme rebuild, Note Info/TXT. |
 | `defaults.py` | `NSUserDefaults` adapter for the preferences protocol. |
 | `views/block_editor.py` | Native title/body page, blocks, formatting toolbar, gutter, attachment rendering. |
 | `views/editor.py` | Compatibility re-export of the block editor. |
 | `views/note_list.py` | Themed persistent selection and collapsible middle column. |
 | `views/settings.py` | Reusable themed Settings window and storage reveal actions. |
-| `views/sidebar.py` | Search, categories, counts, branding, privacy indicator. |
+| `views/sidebar.py` | Search, Library, filesystem Projects, categories, counts, branding, privacy indicator. |
 | `views/palette.py` | Theme token → AppKit color/font/symbol resolution. |
 | `speech.py` | Isolated AVSpeechSynthesizer wrapper and lifecycle. |
 
@@ -234,7 +256,9 @@ collapsed tab.
 
 Phase 1–5 files with `# Title`, metadata, `## Notes`, and optional
 `## Transcript` continue to load. Existing body content becomes blocks and
-transcript chunks remain separate. Unknown metadata is preserved. No file is
-renamed, assigned an on-disk ID, or otherwise migrated merely by being opened.
+transcript chunks remain separate. Root-level notes stay visible as Unfiled;
+project folders are discovered recursively. Unknown metadata is preserved. No
+file is renamed, assigned an on-disk ID/project, or otherwise migrated merely
+by being opened.
 
 See [storage.md](storage.md) for the exact on-disk format and migration rules.
