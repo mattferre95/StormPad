@@ -285,6 +285,12 @@ def main() -> int:
             assert editor.title_text() == ""
             assert editor.body_text() == ""
             assert editor._current.transcript == []
+            controller.flush()
+            blank_reloaded = store.load_note(note.id)
+            assert blank_reloaded.title == "Untitled Note"
+            assert blank_reloaded.body == ""
+            assert blank_reloaded.transcript == []
+            assert blank_reloaded.transcript_visible is False
             editor._body.undoManager().undo()
             settle()
             assert editor.title_text() == title_before
