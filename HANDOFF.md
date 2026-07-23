@@ -3,6 +3,25 @@
 Living handoff document. Updated after every phase. Intended for any agent or
 human (including a later Codex session) continuing this work.
 
+## Final Delivery Requirements (HARD REQUIREMENT — Phase 6)
+
+When all phases are complete, StormPad **must** ship as:
+
+- A real standalone `StormPad.app`.
+- Double-clickable from Finder and Applications (no Terminal, no
+  `scripts/run.sh` required by the end user).
+- Official `Stormpad_logo.png` used as the macOS app icon.
+- Correct `.icns` generation.
+- Correct bundle name, identifier, version, and `Info.plist`.
+- Self-contained packaged dependencies.
+- No dependency on the source folder or the development `.venv`.
+- Reproducible build and install scripts.
+- Installed and tested from `/Applications/StormPad.app`.
+- A final downloadable `.dmg` supporting the normal drag-to-Applications flow.
+
+This is **not** built in Phase 3. It is preserved here as a hard requirement to
+be delivered in Phase 6 (packaging & public readiness).
+
 ## Product summary
 
 StormPad is a native macOS (Python 3.12 + PyObjC/AppKit) local-first notepad.
@@ -15,12 +34,13 @@ design handoff.
 ## Current state
 
 - **Branch:** `main`
-- **Latest commit:** _see `git log -1` — Phase 2 domain/storage commit_
-- **Git status:** clean after the Phase 2 commit (supplied ZIPs, the raw PRD
+- **Latest commit:** _see `git log -1` — Phase 3 native UI commit_
+- **Git status:** clean after the Phase 3 commit (supplied ZIPs, the raw PRD
   `.txt`, and the root logo original are git-ignored; cleaned copies are
-  committed; no test-generated notes committed — tests use `tmp_path`).
-- **Phase complete:** Phase 2 (domain, storage, session, search, preferences —
-  fully headless, 81 tests passing).
+  committed; no dev/test notes committed — tests use `tmp_path`, manual runs use
+  a temp dir via `STORMPAD_NOTES_DIR`).
+- **Phase complete:** Phase 3 (functional native macOS UI wired to the Phase 2
+  `NoteStore`; 102 tests passing, all headless).
 
 ## Setup / run / test commands
 
@@ -69,6 +89,27 @@ Non-UI logic is AppKit-free and headlessly testable. Modules: `paths`,
   `test_storage.py`, `test_session.py`, `test_search.py`, `test_preferences.py`
   (81 tests, all `tmp_path`-based).
 
+## Files created / changed (Phase 3)
+
+- `stormpad/app.py` — real NSApplication lifecycle, delegate (reopen/terminate
+  flush), full main menu (Cmd+N/S/W/F + Edit), View→Theme submenu; `--smoke`
+  and `--self-check` runtime checks; benign CGColor warning silenced at runtime.
+- `stormpad/window.py` — `MainController`: native window (transparent titlebar,
+  full-size content view, real traffic lights), three-column
+  `NSSplitViewController`, header + New Note button; owns store/prefs/autosave
+  and all selection/search/category state.
+- `stormpad/theme.py` — `Theme` dataclass + functional **Storm Blue** tokens;
+  Light/Deep Dark stubs (same shape); `get_theme`/`all_themes`.
+- `stormpad/uihelpers.py` — new pure helpers: `preview_text`, `word_count`,
+  `format_relative`, `choose_selected_note`, `default_new_category`,
+  `SaveStatus`, `AutosaveController` (injectable scheduler).
+- `stormpad/defaults.py` — new `UserDefaultsBackend` (NSUserDefaults adapter).
+- `stormpad/views/` — implemented `palette.py` (new), `layout.py` (new),
+  `controls.py`, `sidebar.py`, `note_list.py`, `editor.py`, `transcript.py`,
+  `empty_state.py`.
+- `tests/test_uihelpers.py` — new (21 tests) for the pure helpers + controller
+  save/selection/delete logic.
+
 ## Features completed
 
 - Public-GitHub-ready scaffold: package skeleton, packaging, license, ignore
@@ -80,25 +121,47 @@ Non-UI logic is AppKit-free and headlessly testable. Modules: `paths`,
   search with category filtering; injectable preferences with safe fallbacks.
 - `paths` resolves the canonical `~/Documents/StormPad/Notes/` and creates it
   only on explicit request.
-- Runnable placeholder `main()` + `python -m stormpad` (UI still Phase 3).
-- 81 unit tests pass without AppKit; ruff clean.
+- **Functional native UI (Phase 3):** real macOS window (native chrome/traffic
+  lights) + three-column split (sidebar 248 / list 326 / editor); brand header
+  with the official logo; search field; category nav (All/Ideas/Sessions/Drafts)
+  with live counts and persisted selection; note list with themed selection,
+  preview, timestamp, category tag; premium serif `NSTextView` editor with title
+  field, created/updated/word-count/filename metadata and real save status;
+  read-only transcript section; create (Cmd+N)/select/edit; debounced autosave
+  (0.4s, atomic writes, flush on switch/close/quit); search (title/body/
+  transcript) with result count; empty / no-selection / no-results states;
+  reload + selection/category restoration on relaunch; Storm Blue theme via
+  semantic tokens; `NSUserDefaults` prefs adapter.
+- 102 unit tests pass without AppKit; ruff clean; app launches cleanly
+  (verified via `--smoke` runtime introspection).
 
 ## Features remaining
 
-- **Phase 3** — native window + three columns, create/select/edit, autosave,
-  search, categories, reload-on-restart.
-- **Phase 4** — Copy Note, Append Test Transcript, Open File, Reveal in Finder,
-  delete-with-confirm, save status, error handling, safe shutdown.
+- **Phase 4** — Copy Note, Append Test Transcript (wire the button), Open File,
+  Reveal in Finder, delete-with-confirm (move to Trash), richer error alerts,
+  safe shutdown hardening.
 - **Phase 5** — visual fidelity, three themes from the token tables, View →
   Theme switcher + persistence, logo, states, resize behavior.
 - **Phase 6** — icon generation, optional `.app` packaging, repo audit, docs.
 
-## Known issues
+## Known issues / Phase-5 fidelity gaps
 
-- None functional. UI modules (`app`, `window`, `views/*`) are documented
-  stubs pending Phase 3; `theme.py` holds tokens only from Phase 5.
+- **Visual polish is intentionally deferred to Phase 5:** no gradients, glow,
+  rounded window-card look, hover states, or exact spacing/typography of the
+  mockup yet. Storm Blue is functional-but-flat; Light and Deep Dark are token
+  stubs (disabled in the Theme menu) and **not** yet real themes. Live theme
+  switching is Phase 5.
+- Transcript is **read-only** in Phase 3; the "Append Test Transcript" button in
+  the transcript card is present but not yet wired (Phase 4). Copy Note, Open
+  File, Reveal in Finder, and Delete are Phase 4 (toolbar/menu wiring).
+- Autosave re-persists the current note in place and does not reorder the list
+  while typing (order refreshes on note switch / filter change) — deliberate, to
+  avoid the row jumping under the cursor.
 - Transcript block text is treated as a single paragraph (no internal blank
   lines) — sufficient for V1's timestamped chunks.
+- **Screenshots:** could not be captured in the build session (no display access
+  for `screencapture`); the app itself launches and runs. See
+  `docs/screenshots/README.md` for the one-line reproducible capture commands.
 
 ## Design fidelity gaps (agreed)
 
@@ -118,8 +181,11 @@ Non-UI logic is AppKit-free and headlessly testable. Modules: `paths`,
 
 ## Theme status
 
-Token tables for all three themes are captured from the design handoff and
-will be transcribed into `theme.py` in Phase 5. Storm Blue is the default.
+`theme.py` defines the semantic token shape and a **functional Storm Blue**
+theme (default), consumed everywhere via `views/palette.py` (no literals in view
+code). Light and Deep Dark are placeholder stubs of the same shape, disabled in
+the View→Theme menu. Real Light/Deep Dark values + live switching land in
+Phase 5 from the captured handoff token tables.
 
 ## Packaging status
 
@@ -139,16 +205,19 @@ Phase 6.
 
 ## Exact next recommended task
 
-Begin **Phase 3** (native UI): NSApplication lifecycle + main menu (Cmd+N/F/S/O)
-in `app.py`; a native window with transparent titlebar / full-size content view
-and real traffic lights hosting a three-column `NSSplitView` in `window.py`;
-then `views/sidebar.py`, `views/note_list.py`, `views/editor.py` wired to a
-`NoteStore`. Deliver create/select/edit, debounced autosave, search, categories,
-and reload-on-restart. Consume the Phase 2 API — do not reimplement storage in
-the UI. **Stop for review at the end of Phase 3.**
+Begin **Phase 4** (actions & reliability): wire the toolbar/menu actions to the
+Phase 2 API — **Copy Note** (full Markdown to pasteboard), **Append Test
+Transcript** (`NoteStore.append_test_transcript`, re-render the transcript
+section live), **Open File** (`NSWorkspace openFile:`), **Reveal in Finder**
+(`activateFileViewerSelectingURLs:`), and **Delete with confirmation** (NSAlert
+→ inject a "move to macOS Trash" delete strategy via
+`NSFileManager trashItemAtURL:`). Add clearer error alerts for load/save/missing
+files and harden shutdown flush. Keep everything on the main thread; do not
+touch the Phase 2 storage layer. **Stop for review at the end of Phase 4.**
 
-Phase 3 will add an `NSUserDefaults`-backed `PreferencesBackend` implementing
-the `get/set/delete` protocol from `preferences.py`.
+Dev/test hooks available: `STORMPAD_NOTES_DIR` (use a temp notes dir),
+`STORMPAD_INITIAL_QUERY` (boot into a search state), `python -m stormpad --smoke`
+(build the UI and print introspected state without the event loop).
 
 ## Guardrails (for any continuing agent)
 

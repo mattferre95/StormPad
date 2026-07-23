@@ -44,15 +44,48 @@ never lost.
 
 | Module | Responsibility |
 | --- | --- |
-| `app.py` | NSApplication lifecycle, main menu (Cmd+N/F/S/O), View → Theme menu. |
-| `window.py` | Main window (native chrome) + three-column split controller. |
-| `views/sidebar.py` | Logo, tagline, search, Library categories, privacy panel. |
-| `views/note_list.py` | Note rows, selected/empty/search states. |
-| `views/editor.py` | Serif title field + premium `NSTextView` writing surface + save status. |
-| `views/toolbar.py` | New Note, Copy Note, Append Transcript, Open File, Reveal, Delete. |
-| `views/transcript.py` | Timestamped transcript card + Append Test Transcript. |
+| `app.py` | NSApplication lifecycle, delegate, main menu (Cmd+N/S/W/F + Edit), View → Theme menu. |
+| `window.py` | `MainController`: native window (transparent titlebar, full-size content, real traffic lights) + three-column `NSSplitViewController`; owns store/prefs/autosave/selection/search state. |
+| `defaults.py` | `UserDefaultsBackend` — NSUserDefaults adapter for the `PreferencesBackend` protocol. |
+| `uihelpers.py` | **Pure** controller helpers: preview text, word count, relative time, selection restoration, default category, `AutosaveController`. |
+| `views/palette.py` | Resolves semantic `Theme` tokens → `NSColor`/fonts. |
+| `views/layout.py` | Tiny Auto Layout helpers (pin edges, size). |
+| `views/sidebar.py` | Logo, tagline, search, Library categories + counts, privacy panel. |
+| `views/note_list.py` | `NSTableView` note rows (themed selection) + empty/search headers. |
+| `views/editor.py` | Serif title field + premium `NSTextView` body + metadata/save status + transcript section. |
+| `views/transcript.py` | Read-only timestamped transcript card (Append wired in Phase 4). |
 | `views/empty_state.py` | Empty / no-selection / no-results states. |
-| `views/controls.py` | Shared themed controls reading from theme tokens. |
+| `views/controls.py` | Shared themed control builders (labels, flipped/solid views). |
+
+### UI layer (Phase 3)
+
+**View hierarchy.** `MainController` builds an `NSWindow` (transparent titlebar
++ full-size content view + real traffic lights) whose content is a header bar
+(New Note button) above an `NSSplitViewController` with three items — `Sidebar`,
+`NoteList`, and an editor column that stacks `Editor` and `EmptyState`. Split
+divider positions and the window frame persist via AppKit autosave names.
+
+**Theming.** Colors live only in `theme.py` (semantic hex tokens). `Palette`
+turns them into `NSColor`s; every view reads semantic names. Storm Blue is
+functional; Light/Deep Dark are token stubs for Phase 5.
+
+**Lifecycle.** `app.py` builds `NSApplication`, a delegate (reopen shows the
+window; terminate flushes pending edits), and the main menu. `python -m stormpad`
+runs it; `--self-check` and `--smoke` are display-independent runtime checks.
+
+**Autosave.** Editing marks the pure `AutosaveController` dirty and (re)starts a
+0.4s debounce backed by `NSTimer`. Firing (or an explicit flush on note switch /
+window close / quit) saves via the Phase 2 atomic write. Save status
+(`Saving…`/`Saved locally`/`Save failed`) reflects real state; the note list is
+not reordered mid-typing.
+
+**Search / category.** The sidebar search field and category rows feed
+`search.search_notes` / `filter_by_category`; results drive the list header,
+count, selection, and empty/results states. Category selection persists.
+
+**Preferences.** `Preferences` (domain, AppKit-free) runs over
+`UserDefaultsBackend`; theme, last note, and last category are restored on
+launch (selection falls back to the newest note, then the empty state).
 
 ## Note Markdown format
 

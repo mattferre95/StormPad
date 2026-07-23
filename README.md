@@ -16,11 +16,14 @@ editor, search, autosave — but is visually its own thing: modern, calm,
 premium, and local-first. Your notes are saved as plain **Markdown files** on
 your Mac. No cloud sync, no accounts, no telemetry, no external AI.
 
-> **Status:** V1 in active development. The local-first **core** — Markdown
-> storage, notes, categories, transcript blocks, search, and preferences — is
-> implemented and unit-tested (headless). The native macOS **UI** is being
-> built next; `./scripts/run.sh` currently launches a placeholder. This README
-> describes the V1 scope. Voice/session-notes features are a later phase (see
+> **Status:** V1 in active development. The local-first **core** (Markdown
+> storage, notes, categories, transcript blocks, search, preferences) and a
+> **functional native macOS UI** (three-column window, create/edit/autosave,
+> search, categories, empty/search states, Storm Blue theme) are implemented;
+> `./scripts/run.sh` launches the real app. Still to come: file actions
+> (Copy/Open/Reveal/Delete/Append) and confirmation dialogs, final visual
+> fidelity + the Light and Deep Dark themes, and `.app`/`.dmg` packaging. This
+> README describes the V1 scope; voice/session features are a later phase (see
 > Roadmap).
 
 ## Screenshots
