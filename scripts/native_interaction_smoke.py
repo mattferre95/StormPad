@@ -8,12 +8,20 @@ import zipfile
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from AppKit import NSApplication, NSButton, NSMenuItem, NSPasteboard
+from AppKit import (
+    NSApplication,
+    NSButton,
+    NSCommandKeyMask,
+    NSEvent,
+    NSEventTypeKeyDown,
+    NSMenuItem,
+    NSPasteboard,
+)
 from Foundation import NSDate, NSRunLoop, NSUserDefaults
 
 from stormpad.app import _build_menu
 from stormpad.block_parser import parse_blocks
-from stormpad.blocks import BlockType
+from stormpad.blocks import Block, BlockType, InlineMark, InlineRun, MarkType
 from stormpad.dragdrop import (
     NOTE_PASTEBOARD_TYPE,
     PROJECT_PASTEBOARD_TYPE,
@@ -35,6 +43,28 @@ def settle() -> None:
     NSRunLoop.currentRunLoop().runUntilDate_(
         NSDate.dateWithTimeIntervalSinceNow_(0.01)
     )
+
+
+def native_key(window, characters: str, key_code: int, modifiers: int = 0) -> None:
+    """Send a constructed native keyDown event through the real first responder."""
+    event = NSEvent.keyEventWithType_location_modifierFlags_timestamp_windowNumber_context_characters_charactersIgnoringModifiers_isARepeat_keyCode_(  # noqa: E501
+        NSEventTypeKeyDown,
+        (0, 0),
+        modifiers,
+        0.0,
+        window.windowNumber(),
+        None,
+        characters,
+        characters,
+        False,
+        key_code,
+    )
+    window.firstResponder().keyDown_(event)
+
+
+def native_text(window, value: str) -> None:
+    for character in value:
+        native_key(window, character, 0)
 
 
 class DraggingInfo:
@@ -142,6 +172,102 @@ def main() -> int:
             editor = controller._editor
             assert not hasattr(editor, "_handle")
             assert not hasattr(editor, "_drag_indicator")
+
+            # Real NSTextInputClient key events: title-to-body transition,
+            # blank/rapid/Unicode body Return, post-edit continuation, and
+            # native undo/redo. These intentionally do not call the delegate
+            # command methods directly.
+            window = controller._window
+            title = editor._title
+            window.makeFirstResponder_(title)
+            assert title.currentEditor() is not None
+            native_key(window, "a", 0, NSCommandKeyMask)
+            native_text(window, "My Project Plan")
+            native_key(window, "\r", 36)
+            assert editor.title_text() == "My Project Plan"
+            assert window.firstResponder() is editor._body
+
+            editor._replace_document([Block()], register_undo=False, focus_index=0)
+            native_text(window, "First line")
+            assert controller._autosave.has_pending
+            native_key(window, "\r", 36)
+            assert editor.body_text() == "First line"
+            assert str(editor._body.string()) == "First line\n\u200b"
+            editor._body.undoManager().undo()
+            assert editor.body_text() == "First line"
+            editor._body.undoManager().redo()
+            assert str(editor._body.string()) == "First line\n\u200b"
+            native_key(window, "\r", 36)
+            assert len(editor._extract_blocks()) == 3
+
+            editor._replace_document(
+                [Block.text_block("Alpha Beta")],
+                register_undo=False,
+                focus_index=0,
+            )
+            editor.restore_selection((6, 4))
+            native_key(window, "\r", 36)
+            assert [block.text for block in editor._extract_blocks()] == [
+                "Alpha ",
+                "",
+            ]
+
+            bold = InlineMark(MarkType.BOLD)
+            editor._replace_document(
+                [
+                    Block(
+                        runs=[
+                            InlineRun("Bold", (bold,)),
+                            InlineRun("Tail"),
+                        ]
+                    )
+                ],
+                register_undo=False,
+                focus_index=0,
+            )
+            editor.restore_selection((4, 0))
+            native_key(window, "\r", 36)
+            inline_split = editor._extract_blocks()
+            assert [block.text for block in inline_split] == ["Bold", "Tail"]
+            assert inline_split[0].runs == [InlineRun("Bold", (bold,))]
+
+            editor._replace_document([Block()], register_undo=False, focus_index=0)
+            native_text(window, "Café 🚀")
+            native_key(window, "\r", 36)
+            assert editor.body_text() == "Café 🚀"
+            controller.flush()
+            key_reloaded = store.load_note(note.id)
+            assert key_reloaded.title == "My Project Plan"
+            assert key_reloaded.body == "Café 🚀"
+
+            editor._replace_document(
+                [Block.text_block("Item", BlockType.BULLET)],
+                register_undo=False,
+                focus_index=0,
+            )
+            native_key(window, "\r", 36)
+            continued = editor._extract_blocks()
+            assert [block.kind for block in continued] == [
+                BlockType.BULLET,
+                BlockType.BULLET,
+            ]
+            editor._replace_document(
+                [Block(kind=BlockType.BULLET)],
+                register_undo=False,
+                focus_index=0,
+            )
+            native_key(window, "\r", 36)
+            assert editor._extract_blocks() == [Block()]
+
+            # Restore the fixture before the broader editor checks.
+            note = store.load_note(note.id)
+            note.title = "Native interaction smoke"
+            note.body = "First block.\n\nSecond block."
+            store.save_note(note, commit_title=True)
+            controller._replace_displayed(note)
+            controller._autosave.reset()
+            editor.load_note(store.load_note(note.id))
+            editor._body.undoManager().removeAllActions()
             original_body = editor.body_text()
             editor.restore_selection((5, 14))
             editor._body.deleteBackward_(None)
@@ -372,7 +498,14 @@ def main() -> int:
                 build_row_before_drag.accessibilityLabel()
             )
             assert not hasattr(build_row_before_drag, "_drag_handle")
-            assert build_row_before_drag.hitTest_((40.0, 17.0)) is build_row_before_drag
+            row_point = controller._sidebar._nav.convertPoint_fromView_(
+                (40.0, 17.0),
+                build_row_before_drag,
+            )
+            assert (
+                controller._sidebar._nav.hitTest_(row_point)
+                is build_row_before_drag
+            )
 
             target_row = controller._sidebar._rows[wisperflow_project.id]
             project_drag = drag_info(
@@ -526,7 +659,14 @@ def main() -> int:
             assert "Move Project Down" in project_titles
 
             controller.cleanup()
-            controller._window.close()
+            same_window = controller._window
+            assert not same_window.isReleasedWhenClosed()
+            same_window.close()
+            assert not same_window.isVisible()
+            controller.show()
+            assert controller._window is same_window
+            assert same_window.isVisible()
+            same_window.close()
             reopened = MainController.alloc().initWithStore_(store)
             assert [project.id for project in reopened._projects()] == [
                 stormpad_project.id,

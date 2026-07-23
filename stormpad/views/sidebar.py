@@ -32,6 +32,7 @@ from AppKit import (
     NSTrackingArea,
     NSTrackingInVisibleRect,
     NSTrackingMouseEnteredAndExited,
+    NSViewHeightSizable,
     NSViewWidthSizable,
 )
 from Foundation import NSMakeRect, NSPointInRect
@@ -99,7 +100,11 @@ class SidebarRow(FlippedView):
 
     def hitTest_(self, point):  # noqa: N802
         """Make icon, label, count, and empty background one draggable surface."""
-        return self if NSPointInRect(point, self.bounds()) else None
+        # AppKit supplies hitTest: points in the receiver's superview
+        # coordinates. Comparing that directly with local bounds rejected
+        # every row whose y-origin was below the first 34 points.
+        local = self.convertPoint_fromView_(point, self.superview())
+        return self if NSPointInRect(local, self.bounds()) else None
 
     def mouseDragged_(self, event):  # noqa: N802
         if (
@@ -441,7 +446,11 @@ class Sidebar:
         p = self.palette
         nav = FlippedView.alloc().init()
         nav.setFrame_(NSMakeRect(0, 0, 220, 400))
-        nav.setAutoresizingMask_(NSViewWidthSizable)
+        # Fill a tall clip view as well as a short one. A shorter document view
+        # is bottom-aligned by NSClipView, which visually places rows near the
+        # top but leaves their apparent area outside the document hit-test
+        # region. That made project/library rows intermittently unclickable.
+        nav.setAutoresizingMask_(NSViewWidthSizable | NSViewHeightSizable)
         self._rows = {}
         y = 4.0
 
@@ -541,7 +550,8 @@ class Sidebar:
                 on_select=self._on_category,
             )
             y += 38
-        nav.setFrameSize_((220, max(y + 8, 300)))
+        viewport_height = float(self._nav_scroll.contentSize().height)
+        nav.setFrameSize_((220, max(y + 8, viewport_height, 300)))
         self._nav_scroll.setDocumentView_(nav)
         self._nav = nav
         self._apply_selection()

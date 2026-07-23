@@ -312,6 +312,10 @@ class MainController(NSObject):
         window.setTitlebarAppearsTransparent_(True)
         window.setTitleVisibility_(NSWindowTitleHidden)
         window.setMinSize_(_MIN_SIZE)
+        # The application remains running when its last window closes. Keep
+        # this controller-owned window alive so Dock reopen can show the same
+        # native window instead of messaging a released NSWindow instance.
+        window.setReleasedWhenClosed_(False)
         window.setDelegate_(self)
         window.setFrameAutosaveName_("StormPadWindow")
         self._window = window

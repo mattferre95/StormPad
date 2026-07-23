@@ -73,7 +73,6 @@ from ..blocks import (
     insert_block,
     next_block_after_return,
     reorder_blocks,
-    split_runs,
     toggle_todo,
 )
 from ..models import Note, move_transcript_chunk, remove_transcript_chunk
@@ -1783,25 +1782,53 @@ class Editor(NSObject):
                 blocks[index] = empty_return_result(block)
                 self._replace_document(blocks, register_undo=True, focus_index=index)
                 return True
-            selected_location = int(self._body.selectedRange().location)
-            native_prefix = str(
-                self._body.string().substringWithRange_(NSMakeRange(0, selected_location))
+
+            # Commit the native replacement first. Reconstructing from the
+            # pre-newline semantic snapshot can discard marked/just-typed text
+            # and cannot honor a selected range. The post-edit text storage is
+            # the only source used for the structural continuation below.
+            storage = self._body.textStorage()
+            snapshot = storage.copy()
+            selection = self.body_selected_range()
+            manager = self._body.undoManager()
+            manager.disableUndoRegistration()
+            try:
+                self._body.insertText_replacementRange_(
+                    "\n",
+                    NSMakeRange(selection[0], selection[1]),
+                )
+            finally:
+                manager.enableUndoRegistration()
+
+            post_blocks = self._extract_blocks()
+            destination = min(index + 1, len(post_blocks) - 1)
+            if destination <= index:
+                # Defensive fallback for an unexpected text-system refusal.
+                post_blocks, destination = insert_block(
+                    post_blocks,
+                    index,
+                    next_block_after_return(block),
+                )
+            else:
+                continuation = next_block_after_return(block)
+                continuation.runs = list(post_blocks[destination].runs)
+                post_blocks[destination] = continuation
+            # Replacing the attributed document invalidates NSTextView's
+            # internal character-range undo records from the preceding typing
+            # burst. Keep one coherent structural snapshot instead of leaving
+            # an out-of-bounds native undo action on the stack.
+            manager.removeAllActions()
+            manager.registerUndoWithTarget_selector_object_(
+                self,
+                "restoreDocument:",
+                {"text": snapshot, "selection": selection},
             )
-            display_prefix = native_prefix.rsplit("\n", 1)[-1].replace(_ZERO_WIDTH, "")
-            decoration = {
-                BlockType.TODO: 2,
-                BlockType.BULLET: 2,
-                BlockType.NUMBERED: 3,
-                BlockType.QUOTE: 2,
-                BlockType.FILE: 2,
-            }.get(block.kind, 0)
-            offset = max(0, len(display_prefix) - decoration)
-            before, after = split_runs(block.runs, offset)
-            blocks[index].runs = before
-            next_block = next_block_after_return(block)
-            next_block.runs = after
-            blocks, destination = insert_block(blocks, index, next_block)
-            self._replace_document(blocks, register_undo=True, focus_index=destination)
+            manager.setActionName_("Insert Newline")
+            self._replace_document(
+                post_blocks,
+                register_undo=False,
+                focus_index=destination,
+            )
             return True
         if command == "deleteBackward:" and block.is_empty and block.kind != BlockType.TEXT:
             blocks[index] = backspace_empty_result(block)
