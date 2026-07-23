@@ -79,6 +79,13 @@ for the new depth. Search and note loading scan root notes plus project folders.
 Malformed or future project metadata never makes contained Markdown disappear;
 such notes remain visible as unfiled/unknown-project content.
 
+Drag payloads never provide filesystem paths. StormPad resolves the private
+pasteboard's stable note/project UUIDs against this current layout, flushes
+pending edits, verifies the source, chooses an unused destination, and performs
+the filesystem move before updating visible membership. A same-project drop is
+a no-op. If the move fails, the previous Markdown path, content, project
+membership, and stable attachment directory remain valid.
+
 Deleting an empty project sends its folder through the configured Trash
 strategy. A populated project cannot be deleted implicitly: the supported path
 moves every note to Unfiled first, collision-safely, then trashes the empty
@@ -150,3 +157,34 @@ It includes the title, readable block text, `[ ]`/`[x]` to-dos, list/quote/link
 content, image alt text, attached filenames, and timestamped transcript chunks.
 It omits the metadata envelope, UUID, `Filename-Mode`, transcript UI state,
 StormPad color/underline markup, and managed attachment directory details.
+
+## Temporary native sharing
+
+Share Note uses the same readable text conversion but writes to a
+collision-safe filename such as `my-business-plan.txt` in the system temporary
+cache under `StormPad/ShareExports`. It never writes into Notes, changes the
+Markdown source, or enters search.
+
+Share Project creates an atomic collision-safe ZIP with this public layout:
+
+```text
+Project Name/
+├── README.txt
+├── Notes/
+│   ├── first-note.md
+│   └── first-note.txt
+└── Attachments/
+    └── first-note/
+        └── referenced-file.pdf
+```
+
+The Markdown copy has internal identity metadata and absolute paths removed,
+and managed attachment links are rewritten to the ZIP layout. Only attachments
+referenced by included notes are copied. `.stormpad-project.json`, preferences,
+caches, orphan records/files, unrelated project files, and hidden UI state are
+excluded. The original project tree is unchanged.
+
+StormPad gives the temporary TXT or ZIP file URL to the native macOS sharing
+picker and does not upload or send it automatically. On launch and quit,
+StormPad removes only its own share artifacts older than 24 hours; recent files
+remain available long enough for a user-selected service to consume them.

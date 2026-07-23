@@ -4,11 +4,11 @@ Living continuation document for the native macOS StormPad project.
 
 ## Current status
 
-Phase 5.1.2 is complete on `feature/notion-editor`. Phase 6 has **not** started.
+Phase 5.1.3 is complete on `feature/notion-editor`. Phase 6 has **not** started.
 
 - **Project:** `/Users/mattferre/web/APP/Stormpad`
-- **Phase 5.1.2 starting point:** `fb6f18b`
-  (`docs: record phase 5.1.1 stabilization handoff`)
+- **Phase 5.1.3 starting point:** `e298315`
+  (`test: verify blank note autosave reload`)
 - **Remote activity:** none; nothing was pushed or published
 - **Packaging/signing/notarization/release:** not started
 - **WisperFlow:** untouched
@@ -16,7 +16,86 @@ Phase 5.1.2 is complete on `feature/notion-editor`. Phase 6 has **not** started.
 Do not package, sign, notarize, publish, push, create a release, or start Phase 6
 until the user completes the hands-on review and explicitly approves it.
 
-## Initial inspection and reproduction
+## Phase 5.1.3 inspection and baseline
+
+The worktree was clean on `feature/notion-editor` at `e298315`; expected
+ancestors `ae51ce1` and `07c3cc4` were present. Before production edits, the
+existing direct project click behavior and absence of note/project drag
+pasteboard writers were reproduced with disposable AppKit introspection.
+
+The requested baseline passed: 258 tests, Ruff, compileall, headless imports,
+AppKit imports, all three themes, self-check, isolated native smoke, and native
+interaction smoke.
+
+## Phase 5.1.3 implementation
+
+### Native note and project sharing
+
+- A compact native share-symbol button sits in the top-right editor header
+  beside Note Info and is visible/enabled with a selected note. Tooltip and
+  accessibility label are both “Share Note”.
+- The button, File ▸ Share Note…, Note ▸ Share Note…, Note Info, and the note
+  context menu share one action. It flushes autosave, reloads the stable-ID
+  note, generates a readable collision-safe TXT outside Notes, and passes its
+  file URL to `NSSharingServicePicker`.
+- Project context menus add Share Project…. A sanitized, atomic,
+  collision-safe ZIP contains README.txt, Markdown/TXT note copies, and only
+  referenced attachments with rewritten links.
+- UUID/project metadata, `.stormpad-project.json`, preferences, caches,
+  orphaned attachments, hidden UI state, and local absolute paths are excluded.
+  Original notes/projects are unchanged.
+- StormPad never selects a service, recipient, upload, or public link. Recent
+  exports stay available to the chosen service; only manager-owned artifacts
+  older than 24 hours are removed on launch/quit.
+
+### Direct project-row ordering
+
+- The full normal row surface—folder, name, count, and empty background—is the
+  drag source. There is no handle or permanent drag indicator.
+- A five-point threshold preserves ordinary selection clicks. During drag the
+  row lifts subtly, a themed insertion line follows valid project positions,
+  accessibility announcements describe the position, and near-edge
+  autoscrolling is attempted.
+- Private UUID-only pasteboard payloads are validated. Projects remain flat:
+  dropping on another project means reorder, never nesting. All Notes,
+  Unfiled, headers, Categories, and external applications reject project
+  movement.
+- Custom UUID order persists in Preferences without renaming/moving project
+  folders, survives relaunch, and participates in native undo/redo. Context
+  menus expose Move Project Up/Down as keyboard-accessible alternatives.
+
+### Note dragging between Projects and Unfiled
+
+- Native note-list rows are whole-row drag sources with no drag icon.
+- Project and Unfiled rows accept validated private note UUID payloads; All
+  Notes and unrelated sidebar regions reject them.
+- Before movement, pending edits flush and current note/project UUIDs are
+  resolved through the model. The collision-safe filesystem move succeeds
+  before selection, search, counts, visible lists, and preferences refresh.
+- Stable note UUID, attachment directory, content, and title are preserved.
+  Managed attachment links retarget for the new note depth. Same-project drops
+  are no-ops; failed moves preserve the prior valid source. Undo returns the
+  note to its previous Project or Unfiled and redo reapplies the move.
+
+### Verification evidence
+
+- The expanded headless suite passes 273 tests.
+- Ruff, compileall, headless/AppKit imports, all themes, self-check, native
+  smoke, and the expanded native interaction smoke pass.
+- The native smoke creates Build, StormPad, and WisperFlow only inside a
+  temporary library; reorders Build, relaunches, moves a note
+  Unfiled → StormPad → Build → Unfiled, checks stable UUID/attachments and
+  undo/redo, prepares note/project shares, and inspects TXT/ZIP contents.
+- Sanitized, visually inspected screenshots live in
+  `docs/screenshots/phase-5-1-3/`, including the real native Share picker and
+  drop feedback in Storm Blue, Light, and Deep Dark.
+
+External Finder drag-to-export is deliberately deferred: an external project
+drag returns no operation, so the managed project folder can never be moved out
+of the library. Block dragging remains absent. Transcript polish remains
+deferred.
+
+## Phase 5.1.2 historical inspection and reproduction
 
 The repository was clean on `feature/notion-editor`. The Phase 5.1.1 baseline
 had 233 passing tests; Ruff, compile/import checks, all three theme objects,
@@ -245,13 +324,27 @@ deterministic hooks.
   but destructive physical Trash interaction was intentionally not invoked
   during the sanitized pass.
 - The project model is one level under `Notes/Projects/`; nested project
-  hierarchies are not part of Phase 5.1.2.
+  hierarchies are not part of Phase 5.1.3.
+- External project dragging to Finder as a promised ZIP is deferred. Internal
+  reordering is the only accepted project drag operation.
 - Search is correct across root/project notes and Transcript text, but
   per-match in-row highlighting remains deferred.
 - Further Transcript editing/presentation polish remains deferred.
 - Speech still uses the system voice and has no voice/rate picker.
 
-## Exact recommended hands-on retest
+## Phase 5.1.3 recommended hands-on retest
+
+Use a disposable library. Confirm the Share button opens the native picker for
+a readable TXT, project Share produces the documented sanitized ZIP, and
+neither action sends or uploads automatically. Grab any normal point on project
+rows to reorder above/below several projects, verify clicks still select, then
+quit/relaunch and confirm order. Drag one note Unfiled → Project A → Project B
+→ Unfiled; confirm UUID, attachment opening, Open File/Reveal paths, search,
+counts, selection, collisions, undo/redo, and relaunch. Repeat drop-target
+feedback in all three themes and exercise Move Project Up/Down plus Move to
+Project/Remove from Project without dragging.
+
+## Phase 5.1.2 regression retest
 
 Use a disposable `STORMPAD_NOTES_DIR` and isolated
 `STORMPAD_DEFAULTS_SUITE`:
@@ -279,7 +372,7 @@ Use a disposable `STORMPAD_NOTES_DIR` and isolated
 10. Use project/note Reveal actions and compare the project shown in Note Info
     with the filesystem.
 
-If this review passes, approve Phase 5.1.2 and only then request Phase 6.
+If this review passes, approve Phase 5.1.3 and only then request Phase 6.
 
 ## Guardrails
 

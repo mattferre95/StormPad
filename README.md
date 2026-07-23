@@ -15,7 +15,7 @@ writing canvas. Notes stay as human-readable Markdown on your Mac; attachments
 are copied into local managed folders. There are no accounts, cloud sync,
 telemetry, external AI services, or web views.
 
-> **Status:** Phase 5.1.2 project folders and native selection behavior are implemented on
+> **Status:** Phase 5.1.3 native sharing and sidebar dragging are implemented on
 > `feature/notion-editor` and ready for hands-on review. Phase 6 packaging has
 > not started: there is no final `.app`, `.icns`, `.dmg`, signing,
 > notarization, release, or landing page yet.
@@ -40,6 +40,14 @@ telemetry, external AI services, or web views.
   swatches.
 - Local filesystem-backed Projects alongside categories, with All Notes and
   Unfiled filters, note counts, safe note movement, and project-aware creation.
+- A compact top-right native Share button plus File and Note menu commands.
+  Notes share as readable temporary TXT files through
+  `NSSharingServicePicker`; projects share as sanitized local ZIP packages.
+- Direct whole-row project reordering with persisted custom order, insertion
+  feedback, undo/redo, and context-menu Move Up/Down alternatives.
+- Direct whole-row note dragging from the middle list onto Projects or
+  Unfiled, preserving stable identity, attachments, selection, and rollback
+  safety. All Notes is intentionally not a destination.
 - Debounced atomic autosave, native undo/redo, search, categories, restored
   selection, Copy Note, Open File, Reveal in Finder, Delete to Trash, and
   Speak Selection.
@@ -148,7 +156,7 @@ hover-control preference persist.
 
 ## Screenshots
 
-Sanitized Phase 5.1.2 fixtures and reproducible capture commands are documented
+Sanitized Phase 5.1.3 fixtures and reproducible capture commands are documented
 in [docs/screenshots/README.md](docs/screenshots/README.md). Do not capture real
 personal notes for repository screenshots.
 
@@ -169,6 +177,8 @@ stormpad/
   session.py                 CRUD, movement, deletion safety, transcript seam
   preferences.py / theme.py  persisted state and three complete palettes
   exporter.py                deterministic readable TXT output
+  sharing.py                 temporary note TXT and sanitized project ZIP shares
+  dragdrop.py                private UUID payloads and pure reorder helpers
   views/block_editor.py      native writing page, gutter and formatting
   views/note_list.py         selected rows and collapsible panel
   views/settings.py          reusable native Settings window
@@ -183,8 +193,8 @@ StormPad remains a standalone local-first notepad. This phase does not add
 recording, live transcription, AI writing, cloud storage, collaboration,
 arbitrary embeds, databases, or publishing.
 
-- **Phase 5.1.2 (current):** project folders, selection-aware block conversion,
-  editor-wide deletion, clear formatting, and a simplified plus-only gutter.
+- **Phase 5.1.3 (current):** native note/project sharing, direct-row project
+  reordering, and note movement between Projects and Unfiled.
 - **Phase 6 (next, after manual review):** generate the official `.icns`, build
   a standalone `StormPad.app`, install-test it from `/Applications`, and create
   a drag-to-Applications `.dmg`.

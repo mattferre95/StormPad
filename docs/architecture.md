@@ -207,6 +207,61 @@ immediately, Editor controls the persisted Add Block hover preference, and
 Storage shows the StormPad root/Notes/Attachments paths with separate Reveal
 actions.
 
+## Phase 5.1.3 native sharing and sidebar dragging
+
+### One sharing path
+
+The top-right `square.and.arrow.up` button, File ▸ Share Note…, Note ▸ Share
+Note…, Note Info, and note context menu all call the same controller action.
+Pending edits are flushed, the current note is reloaded by stable UUID, and
+`ShareExportManager` writes a human-readable TXT outside the Notes library.
+`NSSharingServicePicker` receives only the resulting file URL. StormPad does
+not pick a service, recipient, cloud destination, or public link.
+
+Project row context menus call the same manager with a stable project UUID.
+The manager stages a sanitized project tree and atomically replaces a
+collision-safe ZIP. It includes a local-export README, readable TXT and
+sanitized Markdown per note, and only referenced managed attachments.
+Attachment links are rewritten for the ZIP layout; identity metadata, project
+metadata files, preferences, caches, orphaned attachments, and absolute local
+paths are omitted. The originals are never rewritten.
+
+The share cache defaults to the system temporary directory under
+`StormPad/ShareExports`, never under Notes. Manager-owned artifacts older than
+24 hours are removed on launch and quit. Current exports remain long enough for
+the user-selected native service to read them.
+
+### UUID-only internal dragging
+
+`dragdrop.py` defines private project and note pasteboard types. Payloads
+contain a validated UUID, semantic kind, source project UUID/Unfiled, and source
+index; paths are never accepted from the pasteboard. Every drop resolves the
+UUID through the current `NoteStore`/project model and rejects missing,
+deleted, stale, malformed, or unsupported payloads.
+
+Custom project `SidebarRow` views make the icon, name, count, and empty row
+background one drag surface. A five-point threshold separates selection from
+dragging. Internal project drops only compute a new flat order—dropping on a
+project never nests it—and persist UUID order in Preferences without renaming
+folders. The UI shows a lifted row, insertion line, accessibility announcement,
+and near-edge autoscroll. Undo/redo and context-menu Move Project Up/Down use
+the same pure reorder operation.
+
+The middle `NSTableView` supplies native whole-row note dragging. Project and
+Unfiled rows are note destinations; All Notes, Categories, and the Projects
+header reject drops. Before a move, the controller flushes autosave and reloads
+the note/project by UUID. `NoteStore` performs the collision-safe filesystem
+move first, retargets managed attachment links, and only then refreshes
+selection, filters, search, counts, current paths, and preferences. The stable
+note UUID and attachment directory do not change. A failure leaves the prior
+file/content/membership valid; same-project drops are no-ops. Undo moves the
+note to its previous project or Unfiled location.
+
+Dragging an exported project ZIP to Finder is deliberately deferred. External
+dragging returns no operation so StormPad can never move a managed project
+folder out of its library. Block dragging inside the editor remains out of
+scope.
+
 ## Layers
 
 ### AppKit-free
@@ -215,6 +270,8 @@ actions.
 | --- | --- |
 | `models.py` | Note/project/transcript structures, categories, timestamps, stable-ID state. |
 | `storage.py` | Note/project parsing/serialization, atomic writes, slugging, safe rename, legacy migration. |
+| `sharing.py` | Temporary readable note shares and atomic sanitized project ZIP packages. |
+| `dragdrop.py` | Private UUID drag payload validation and pure project reorder helpers. |
 | `blocks.py` | Semantic blocks/inline marks and pure structural operations. |
 | `block_parser.py` | Supported Markdown → semantic blocks. |
 | `block_serializer.py` | Semantic blocks → safe deterministic Markdown. |
