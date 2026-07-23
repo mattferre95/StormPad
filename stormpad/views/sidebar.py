@@ -1,7 +1,8 @@
 """Sidebar view: brand header, search, category navigation, privacy footer.
 
-Builds native AppKit views wired to a controller. Colors come from the palette;
-the official logo image is passed in untouched.
+Native AppKit views wired to a controller. Colors come from the palette; the
+official logo image is passed in untouched. Library rows use SF Symbols, a
+themed selected pill/border, and a hover state.
 """
 
 from __future__ import annotations
@@ -15,37 +16,70 @@ from AppKit import (
     NSImageScaleProportionallyUpOrDown,
     NSImageView,
     NSSearchField,
+    NSTrackingActiveInKeyWindow,
+    NSTrackingArea,
+    NSTrackingInVisibleRect,
+    NSTrackingMouseEnteredAndExited,
 )
+from Foundation import NSMakeRect
 
 from ..models import ALL_NOTES, CATEGORIES
-from .controls import FlippedView, flipped_view, label, solid_view
+from .controls import FlippedView, flipped_view, icon_view, label, rounded_view, solid_view
 from .layout import add, pin_edges, set_height, set_width
-from .palette import Palette
+from .palette import Palette, symbol_image
 
-# Sidebar order: "All Notes" (filter) first, then the real categories.
 _ROWS: tuple[str, ...] = (ALL_NOTES, *CATEGORIES)
+_ICONS: dict[str, str] = {
+    ALL_NOTES: "square.grid.2x2",
+    "Ideas": "lightbulb",
+    "Sessions": "waveform",
+    "Drafts": "pencil.line",
+}
+_TRACKING_OPTS = (
+    NSTrackingMouseEnteredAndExited | NSTrackingActiveInKeyWindow | NSTrackingInVisibleRect
+)
 
 
 class CategoryRow(FlippedView):
-    """A clickable category row (name + count) with a selected state."""
+    """A clickable category row (icon + name + count) with selected/hover states."""
 
     def initWithCategory_(self, category):  # noqa: N802
         self = objc.super(CategoryRow, self).init()
         if self is None:
             return None
         self._category = category
+        self._selected = False
+        self._palette: Palette | None = None
         self.on_select: Callable[[str], None] | None = None
+        area = NSTrackingArea.alloc().initWithRect_options_owner_userInfo_(
+            NSMakeRect(0, 0, 0, 0), _TRACKING_OPTS, self, None
+        )
+        self.addTrackingArea_(area)
         return self
 
     def mouseDown_(self, event):  # noqa: N802
         if self.on_select is not None:
             self.on_select(self._category)
 
-    @objc.python_method
+    def mouseEntered_(self, event):  # noqa: N802
+        if not self._selected and self._palette is not None:
+            self.setBackgroundColor_(self._palette.hover_background)
+
+    def mouseExited_(self, event):  # noqa: N802
+        if not self._selected and self._palette is not None:
+            self.setBackgroundColor_(NSColor.clearColor())
+
     def set_selected(self, selected: bool, palette: Palette) -> None:
-        self.setBackgroundColor_(
-            palette.selected_background if selected else NSColor.clearColor()
+        self._selected = selected
+        self._palette = palette
+        self.setBackgroundColor_(palette.selected_background if selected else NSColor.clearColor())
+        self.layer().setBorderWidth_(1.0 if selected else 0.0)
+        self.layer().setBorderColor_(
+            palette.selected_border.CGColor() if selected else NSColor.clearColor().CGColor()
         )
+        self._name.setTextColor_(palette.text_primary if selected else palette.text_secondary)
+        self._count.setTextColor_(palette.text_secondary if selected else palette.text_muted)
+        self._icon.setContentTintColor_(palette.accent_strong if selected else palette.text_muted)
 
 
 class Sidebar:
@@ -68,7 +102,6 @@ class Sidebar:
 
     def _build(self, logo_image, search_delegate) -> NSSearchField:
         p = self.palette
-        # Brand header (top inset leaves room for the window traffic lights).
         header = add(self.view, flipped_view())
         pin_edges(header, self.view, top=52, leading=16, trailing=14, bottom=None)
         set_height(header, 40)
@@ -93,7 +126,6 @@ class Sidebar:
         )
         pin_edges(tagline, header, top=20, leading=46, trailing=0, bottom=None)
 
-        # Search field.
         search = add(self.view, NSSearchField.alloc().init())
         search.setDelegate_(search_delegate)
         search.setPlaceholderString_("Search notes")
@@ -116,33 +148,47 @@ class Sidebar:
             pin_edges(row, self.view, top=y, leading=10, trailing=10, bottom=None)
             set_height(row, 34)
 
+            icon = add(
+                row, icon_view(symbol_image(_ICONS.get(category, "circle"), size=13), p.text_muted)
+            )
+            pin_edges(icon, row, top=9, leading=12, trailing=None, bottom=None)
+            set_width(icon, 17)
+            set_height(icon, 16)
             title = add(row, label(category, NSFont.systemFontOfSize_(13.5), p.text_secondary))
-            pin_edges(title, row, top=8, leading=12, trailing=None, bottom=None)
-
+            pin_edges(title, row, top=8, leading=38, trailing=None, bottom=None)
             count = add(row, label("0", NSFont.systemFontOfSize_(11.5), p.text_muted))
             pin_edges(count, row, top=8, leading=None, trailing=12, bottom=None)
 
+            row._icon = icon
+            row._name = title
+            row._count = count
             self._rows[category] = row
             self._counts[category] = count
             y += 38
 
         # Privacy footer (non-interactive).
-        footer = add(self.view, solid_view(p.input_background))
-        footer.layer().setCornerRadius_(10.0)
-        footer.layer().setBorderWidth_(1.0)
-        footer.layer().setBorderColor_(p.border.CGColor())
+        footer = add(
+            self.view,
+            rounded_view(
+                p.privacy_background, 10.0, border_color=p.privacy_border, border_width=1.0
+            ),
+        )
         pin_edges(footer, self.view, top=None, leading=14, trailing=14, bottom=16)
-        set_height(footer, 48)
+        set_height(footer, 52)
+        shield = add(footer, icon_view(symbol_image("checkmark.shield", size=15), p.accent_strong))
+        pin_edges(shield, footer, top=17, leading=12, trailing=None, bottom=None)
+        set_width(shield, 20)
+        set_height(shield, 18)
         f_title = add(
             footer,
             label("Local-first & private", NSFont.boldSystemFontOfSize_(12), p.text_secondary),
         )
-        pin_edges(f_title, footer, top=8, leading=12, trailing=12, bottom=None)
+        pin_edges(f_title, footer, top=10, leading=40, trailing=12, bottom=None)
         f_sub = add(
             footer,
             label("Everything stays on this Mac", NSFont.systemFontOfSize_(10.5), p.text_muted),
         )
-        pin_edges(f_sub, footer, top=26, leading=12, trailing=12, bottom=None)
+        pin_edges(f_sub, footer, top=28, leading=40, trailing=12, bottom=None)
 
         self.set_active_category(ALL_NOTES)
         return search

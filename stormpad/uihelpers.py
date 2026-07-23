@@ -75,6 +75,19 @@ def is_speakable(text: str | None) -> bool:
     return bool(text and text.strip())
 
 
+def status_style(status: SaveStatus) -> tuple[str, str, str]:
+    """Map a save status to (text-token, background-token, SF-Symbol) names.
+
+    Pure so the mapping is testable; the editor resolves the token names against
+    the active palette.
+    """
+    return {
+        SaveStatus.SAVED: ("success", "success_background", "checkmark"),
+        SaveStatus.SAVING: ("text_muted", "pill_background", "arrow.triangle.2.circlepath"),
+        SaveStatus.FAILED: ("destructive", "destructive_background", "exclamationmark.triangle"),
+    }[status]
+
+
 def format_relative(dt: datetime, now: datetime) -> str:
     """Human-friendly note timestamp, à la the design ('Today, 2:14 PM')."""
     # Compare in the reference ('now') timezone.

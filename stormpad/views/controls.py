@@ -11,12 +11,36 @@ import objc
 from AppKit import (
     NSColor,
     NSFont,
+    NSImageView,
     NSLineBreakByTruncatingTail,
     NSLineBreakByWordWrapping,
     NSRectFill,
     NSTextField,
     NSView,
 )
+from Quartz import CAGradientLayer
+
+
+class GradientView(NSView):
+    """A flipped view whose backing layer is a vertical ``CAGradientLayer``."""
+
+    def makeBackingLayer(self):  # noqa: N802
+        return CAGradientLayer.layer()
+
+    def isFlipped(self):  # noqa: N802
+        return True
+
+    def setGradientColors_(self, colors):  # noqa: N802
+        self.setWantsLayer_(True)
+        self.layer().setColors_([c.CGColor() for c in colors])
+
+
+def gradient_view(top: NSColor, bottom: NSColor) -> GradientView:
+    """A vertical gradient background view (top → bottom)."""
+    view = GradientView.alloc().init()
+    view.setWantsLayer_(True)
+    view.setGradientColors_([top, bottom])
+    return view
 
 
 class FlippedView(NSView):
@@ -87,3 +111,29 @@ def label(
         field.cell().setLineBreakMode_(NSLineBreakByTruncatingTail)
         field.cell().setTruncatesLastVisibleLine_(True)
     return field
+
+
+def rounded_view(
+    color: NSColor,
+    radius: float,
+    *,
+    border_color: NSColor | None = None,
+    border_width: float = 0.0,
+) -> FlippedView:
+    """A solid, rounded, optionally bordered container view."""
+    view = solid_view(color)
+    view.layer().setCornerRadius_(radius)
+    if border_color is not None and border_width > 0:
+        view.layer().setBorderWidth_(border_width)
+        view.layer().setBorderColor_(border_color.CGColor())
+    return view
+
+
+def icon_view(image, tint: NSColor | None = None) -> NSImageView:
+    """An NSImageView for a (template) SF Symbol image with a tint color."""
+    view = NSImageView.alloc().init()
+    if image is not None:
+        view.setImage_(image)
+    if tint is not None:
+        view.setContentTintColor_(tint)
+    return view

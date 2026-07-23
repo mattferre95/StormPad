@@ -17,15 +17,14 @@ premium, and local-first. Your notes are saved as plain **Markdown files** on
 your Mac. No cloud sync, no accounts, no telemetry, no external AI.
 
 > **Status:** V1 in active development. The local-first **core** (Markdown
-> storage, notes, categories, transcript blocks, search, preferences), a
-> **functional native macOS UI** (three-column window, create/edit/autosave,
-> search, categories, empty/search states, Storm Blue theme), and the **V1
-> actions** — Copy Note, Append Test Transcript, Open File, Reveal in Finder,
-> Delete → Trash (with confirmation), and native **Speak Selection** — are all
-> implemented; `./scripts/run.sh` launches the real app. Still to come: final
-> visual fidelity + the Light and Deep Dark themes, and `.app`/`.dmg` packaging.
-> This README describes the V1 scope; voice recording/transcription remain a
-> later phase (see Roadmap).
+> storage, notes, categories, transcript blocks, search, preferences), the
+> **native macOS UI** (three-column window, create/edit/autosave, search,
+> categories, empty/search states), the **V1 actions** — Copy Note, Append Test
+> Transcript, Open File, Reveal in Finder, Delete → Trash (with confirmation),
+> native **Speak Selection** — and **all three polished themes with live
+> switching** are implemented; `./scripts/run.sh` launches the real app. Still
+> to come: `.app` / `.dmg` packaging (Phase 6). This README describes the V1
+> scope; voice recording/transcription remain a later phase (see Roadmap).
 
 ## Screenshots
 
@@ -62,6 +61,10 @@ _Screenshots land during Phase 5 (visual fidelity)._
 | **Storm Blue / Signature** (default) | Night-navy surfaces, electric-blue & cyan accents, subtle glow |
 | **Light** | Clean cool-gray canvas, frosted white panels, restrained blue accents |
 | **Deep Dark / Focus** | Near-black monochrome, no colored glow, tuned for long focused writing |
+
+Switch live from **View ▸ Theme** — no relaunch — and StormPad remembers your
+choice. Each theme also sets a matching native window appearance (traffic
+lights, cursor, scrollbars).
 
 ## Local-first
 
@@ -190,10 +193,16 @@ See [docs/architecture.md](docs/architecture.md) for detail.
 ## Roadmap
 
 - **V1** — standalone local-first Markdown notepad _(current)_
+  - **Phase 6 (next)** — package a standalone, double-clickable `StormPad.app`
+    and a drag-to-Applications `.dmg` (official logo as the app icon)
 - **V2** — WisperFlow **Session Notes**: long-form local dictation appends
   timestamped transcript blocks into StormPad-style notes
 - **Later** — folders/tags, Markdown preview, export, local intelligence
   (all local-first)
+
+Future distribution (not built yet): a **mattferre.com** showcase with a
+_Download for macOS_ button linking to a **GitHub Release** `StormPad.dmg` —
+open the DMG, drag StormPad to Applications, launch.
 
 ### Relationship to WisperFlow
 

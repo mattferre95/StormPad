@@ -16,7 +16,7 @@ from . import __app_name__, __version__
 def _build_menu(app, controller) -> None:
     from AppKit import NSMenu, NSMenuItem
 
-    from .theme import FUNCTIONAL_THEME_IDS, STORM_BLUE, all_themes
+    from .theme import all_themes
 
     main_menu = NSMenu.alloc().init()
 
@@ -87,10 +87,11 @@ def _build_menu(app, controller) -> None:
     theme_menu = NSMenu.alloc().initWithTitle_("Theme")
     theme_item.setSubmenu_(theme_menu)
     for theme_id, theme in all_themes().items():
-        entry = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(theme.name, None, "")
-        entry.setEnabled_(theme_id in FUNCTIONAL_THEME_IDS)  # Light/Deep Dark: Phase 5
-        if theme_id == STORM_BLUE:
-            entry.setState_(1)  # on
+        entry = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+            theme.name, "selectTheme:", ""
+        )
+        entry.setTarget_(controller)
+        entry.setRepresentedObject_(theme_id)  # checkmark managed by validateMenuItem_
         theme_menu.addItem_(entry)
     view_menu.addItem_(theme_item)
 

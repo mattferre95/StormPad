@@ -34,13 +34,13 @@ design handoff.
 ## Current state
 
 - **Branch:** `main`
-- **Latest commit:** _see `git log -1` — Phase 4 actions/speech commit_
-- **Git status:** clean after the Phase 4 commit (supplied ZIPs, the raw PRD
+- **Latest commit:** _see `git log -1` — Phase 5 visual fidelity / themes commit_
+- **Git status:** clean after the Phase 5 commit (supplied ZIPs, the raw PRD
   `.txt`, and the root logo original are git-ignored; cleaned copies are
-  committed; no dev/test notes committed — tests use `tmp_path`, manual runs use
-  a temp dir via `STORMPAD_NOTES_DIR`).
-- **Phase complete:** Phase 4 (actions, reliability, and native Speak Selection;
-  121 tests passing, all headless).
+  committed; no dev/test notes or screenshots committed — tests use `tmp_path`,
+  manual runs use a temp dir via `STORMPAD_NOTES_DIR`).
+- **Phase complete:** Phase 5 (visual fidelity, three complete themes, live
+  theme switching; 134 tests passing, all headless).
 
 ## Setup / run / test commands
 
@@ -130,6 +130,31 @@ Non-UI logic is AppKit-free and headlessly testable. Modules: `paths`,
 - `tests/test_speech.py` (new) + extended `test_uihelpers.py` (copy/next/
   speakable/external-deletion) → 121 tests total.
 
+## Files created / changed (Phase 5)
+
+- `stormpad/theme.py` — complete ~50-token `Theme` dataclass; three first-class
+  themes (Storm Blue / Light / Deep Dark) with real handoff values + decorative
+  params (gradient/glow/shadow); `menu_state`, `THEME_ORDER`, `all_themes`.
+- `stormpad/views/palette.py` — dynamic token→`NSColor` resolution (with legacy
+  aliases), fonts, `window_gradient`/`glow`/`selection_glow`, and `symbol_image`
+  (SF Symbols).
+- `stormpad/window.py` — split into `_build_window` + `_install_content` (used
+  for **live theme rebuild**); `selectTheme_` (persist + rebuild + restore
+  editor selection/focus); per-theme window `NSAppearance`; gradient root; SF
+  Symbol pill/icon toolbar with tooltips/disabled/destructive; theme checkmarks
+  via `validateMenuItem_`+`menu_state`; `STORMPAD_THEME` dev hook.
+- `stormpad/views/{sidebar,note_list,editor,transcript,controls}.py` — SF Symbol
+  library icons + selected pill/border + hover + shield footer (sidebar);
+  themed selection with border/glow + category chip (note list); status &
+  filename pills, transcript-append target, selection/focus preservation
+  (editor); redesigned transcript card w/ icon header + readiness + in-card
+  Append button (transcript); `GradientView`, `rounded_view`, `icon_view`
+  (controls).
+- `stormpad/app.py` — theme menu items wired to `selectTheme:` with
+  `representedObject`.
+- `stormpad/uihelpers.py` — `status_style` (pure save-status → token mapping).
+- `tests/test_theme.py` (new, 13) → 134 tests total.
+
 ## Features completed
 
 - Public-GitHub-ready scaffold: package skeleton, packaging, license, ignore
@@ -160,41 +185,63 @@ Non-UI logic is AppKit-free and headlessly testable. Modules: `paths`,
   **Speak Selection / Stop Speaking** (AVSpeechSynthesizer) in the editor
   context menu and Edit▸Speech, full menu/button validation, external-deletion
   handling, and speech-stop + flush on switch/delete/close/quit.
-- 121 unit tests pass without AppKit; ruff clean; app launches cleanly with an
-  empty console (verified via a real launch + `--smoke` introspection).
+- **Visual fidelity & themes (Phase 5):** complete semantic token architecture;
+  three first-class themes (Storm Blue signature / Light / Deep Dark focus);
+  **live View▸Theme switching** (no relaunch) with checkmarks and persistence;
+  per-theme window appearance (native traffic lights/cursor/scrollbars); gradient
+  background + restrained selection glow (Storm Blue only); SF Symbol pill/icon
+  toolbar; polished sidebar (icons, selected pill, hover, shield footer), note
+  list (themed selection + category chip), editor (status/filename pills, serif
+  typography), transcript card, and empty/search states.
+- 134 unit tests pass without AppKit; ruff clean; all three themes launch
+  cleanly with an empty console (verified via real launches + `--smoke`).
 
 ## Features remaining
 
-- **Phase 5** — visual fidelity, three themes from the token tables, View →
-  Theme switcher + persistence, logo, states, resize behavior.
-- **Phase 6** — icon generation, optional `.app` packaging, repo audit, docs.
+- **Phase 6** — icon generation (`.icns` from the official logo), `.app`
+  packaging, `.dmg` creation, install/test from `/Applications`, repo audit,
+  final docs. See **Final Delivery Requirements** at the top.
 
-## Known issues / Phase-5 fidelity gaps
+## Design comparison (vs. supplied handoff)
 
-- **Visual polish is intentionally deferred to Phase 5:** no gradients, glow,
-  rounded window-card look, hover states, or exact spacing/typography of the
-  mockup yet. Storm Blue is functional-but-flat; Light and Deep Dark are token
-  stubs (disabled in the Theme menu) and **not** yet real themes. Live theme
-  switching is Phase 5. The action toolbar uses plain buttons (Phase-4 minimal
-  styling), not the designed pill/icon toolbar.
-- Transcript remains **read-only text**; the in-card "Append Test Transcript"
-  button is decorative — the wired action lives in the toolbar/File menu.
+**Matched closely:** three-column proportions; sidebar brand block (official
+logo + wordmark + tagline), search, library rows with icons/counts/selected
+pill, local-first footer; note-list rows (title / 2-line preview / timestamp /
+category chip) with themed selection (cyan glow in Storm Blue, soft blue in
+Light, quiet zinc in Deep Dark); editor title/metadata/save-status; transcript
+card (icon header, readiness indicator, monospace timestamps, Append action);
+empty/search/no-results states; all three palettes; save-status pills.
+
+**Native adaptations (AppKit differs from the static mockup):** real macOS
+window chrome + real traffic lights instead of the mockup's floating rounded
+card and fake lights; per-theme `NSAppearance` drives native controls; window
+background is a subtle vertical gradient (native `CAGradientLayer`) rather than
+the mockup's layered radial glows; the transcript Append button uses a solid
+themed border (CALayer has no native dashed border); fonts are SF Pro / New
+York / SF Mono (no bundled Inter / Newsreader / JetBrains Mono).
+
+**Remaining gaps (honest):** not pixel-perfect — micro-spacing, exact glow
+radii, and some hover treatments are approximations. Hover is implemented on
+sidebar rows; note-row/toolbar hover relies on native defaults. Search-result
+title/body **highlighting is deferred** (match metadata is produced by
+`search.py` but not yet rendered in-list; see gap below). This was not
+verified against the mockup pixel-by-pixel — no display capture was available.
+
+## Known issues / limitations
+
+- **Search highlighting deferred:** result rows show the "N notes matching …"
+  header and correct ordering, but per-match title/body highlighting is not yet
+  drawn. The `SearchResult.matches` spans are available for a later pass.
 - **Autosave & external deletion:** while a note is open, autosave re-persists
-  the current note (atomic write). If its file was deleted externally *mid-edit*,
-  the next autosave recreates it — a deliberate choice to never silently discard
-  the user's in-progress edits. Open/Reveal/Delete and note-switch/load **do**
-  detect a missing file and recover with a clear alert. Continuous filesystem
-  watching is still out of scope.
-- Autosave does not reorder the list while typing (order refreshes on note
-  switch / filter change) — deliberate, to avoid the row jumping under the cursor.
-- Transcript block text is treated as a single paragraph (no internal blank
-  lines) — sufficient for V1's timestamped chunks.
-- **Speech:** uses the current system default voice; no voice picker, rate, or
-  word-highlighting (intentionally out of scope). Menu items validate via
-  `validateMenuItem_` when a menu opens (pull-based), so state is correct on open.
-- **Screenshots:** could not be captured in the build session (no display access
-  for `screencapture`); the app launches and runs. See
-  `docs/screenshots/README.md` for the one-line reproducible capture commands.
+  it (atomic write); if the file was deleted externally *mid-edit*, the next
+  autosave recreates it (deliberate — never silently discard in-progress edits).
+  Open/Reveal/Delete and note-switch/load detect a missing file and recover.
+- Autosave does not reorder the list while typing (refreshes on switch / filter).
+- Transcript block text is a single paragraph (no internal blank lines).
+- **Speech** uses the system default voice; no voice picker/rate/highlighting.
+- **Screenshots** could not be captured in the build session (no display access
+  for `screencapture`); all three themes launch and run with an empty console.
+  See `docs/screenshots/README.md` for reproducible capture commands.
 
 ## Speech architecture (Phase 4)
 
@@ -225,11 +272,13 @@ close, and app quit.
 
 ## Theme status
 
-`theme.py` defines the semantic token shape and a **functional Storm Blue**
-theme (default), consumed everywhere via `views/palette.py` (no literals in view
-code). Light and Deep Dark are placeholder stubs of the same shape, disabled in
-the View→Theme menu. Real Light/Deep Dark values + live switching land in
-Phase 5 from the captured handoff token tables.
+**All three themes are complete and first-class.** `theme.py` holds ~50 semantic
+tokens per theme; `views/palette.py` resolves them to `NSColor`/fonts/SF Symbols
+(no literals in view code). **Live switching** via View▸Theme rebuilds the whole
+content tree (`_install_content`) so no stale colors remain, sets a per-theme
+`NSAppearance`, preserves editor selection/focus, and persists the choice
+(`theme` preference; invalid → Storm Blue). Storm Blue is the default and the
+only theme with decorative glow.
 
 ## Packaging status
 
@@ -249,19 +298,35 @@ Phase 6.
 
 ## Exact next recommended task
 
-Begin **Phase 5** (visual fidelity & themes): transcribe the full handoff token
-tables into `theme.py` for **Light** and **Deep Dark**, add **live theme
-switching** (View▸Theme actions that rebuild/re-color the UI and persist via the
-existing `theme` preference), and raise Storm Blue to design fidelity — gradients
-/glow/rounded surfaces, hover + selection states, exact spacing/typography, the
-designed pill/icon action toolbar, transcript card, and empty/search polish.
-Keep the Phase 2 storage and Phase 3/4 behavior intact. **Stop for review at the
-end of Phase 5.** (Packaging `.app`/`.dmg` remains Phase 6 — see Final Delivery
-Requirements at the top.)
+Begin **Phase 6** (packaging & public readiness), per the Final Delivery
+Requirements at the top: generate `.icns` from the untouched official logo via a
+reproducible `scripts/generate_icons.py` (`sips` + `iconutil`); build a
+standalone, double-clickable `StormPad.app` with a correct `Info.plist` (bundle
+name / identifier / version) and self-contained dependencies (no source-folder
+or `.venv` dependency; e.g. py2app or an embedded venv); install and test from
+`/Applications/StormPad.app`; produce a drag-to-Applications `.dmg`; add
+reproducible build/install scripts; then a final repo audit and doc pass. Do not
+push/publish. **Stop for review at the end of Phase 6.**
 
-Dev/test hooks available: `STORMPAD_NOTES_DIR` (temp notes dir),
-`STORMPAD_INITIAL_QUERY` (boot into a search state), `python -m stormpad --smoke`
-(build the UI and print introspected state without the event loop).
+### Future distribution direction (do NOT build yet)
+
+```
+mattferre.com StormPad showcase
+→ Download for macOS
+→ GitHub Release asset: StormPad.dmg
+→ Open DMG
+→ Drag StormPad to Applications
+→ Launch StormPad.app
+```
+
+The landing page (mattferre.com showcase) and GitHub Release are **future**
+work — record the direction, build nothing in Phase 5/6 beyond the local
+`.app`/`.dmg`.
+
+Dev/test hooks: `STORMPAD_NOTES_DIR` (temp notes dir), `STORMPAD_INITIAL_QUERY`
+(boot into a search state), `STORMPAD_THEME` (force initial theme),
+`python -m stormpad --smoke` (build the UI + print introspected state without the
+event loop).
 
 ## Guardrails (for any continuing agent)
 

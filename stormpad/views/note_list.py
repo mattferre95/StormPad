@@ -12,9 +12,11 @@ import objc
 from AppKit import (
     NSBezierPath,
     NSFont,
+    NSGraphicsContext,
     NSInsetRect,
     NSNoBorder,
     NSScrollView,
+    NSShadow,
     NSTableColumn,
     NSTableRowView,
     NSTableView,
@@ -25,8 +27,8 @@ from Foundation import NSIndexSet, NSObject
 
 from ..models import ALL_NOTES, Note, now_local
 from ..uihelpers import format_relative, preview_text
-from .controls import FlippedView, flipped_view, label, solid_view
-from .layout import add, pin_edges
+from .controls import FlippedView, flipped_view, label, rounded_view, solid_view
+from .layout import add, pin_edges, set_height, set_width
 from .palette import Palette
 
 
@@ -43,9 +45,26 @@ class _ThemedRowView(NSTableRowView):
     def drawSelectionInRect_(self, rect):  # noqa: N802
         if not self.isSelected():
             return
-        self._palette.selected_background.set()
+        p = self._palette
         inset = NSInsetRect(self.bounds(), 8.0, 3.0)
-        NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(inset, 10.0, 10.0).fill()
+        path = NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(inset, 10.0, 10.0)
+        glow = p.selection_glow(0.55)
+        if glow is not None:
+            NSGraphicsContext.saveGraphicsState()
+            shadow = NSShadow.alloc().init()
+            shadow.setShadowColor_(glow)
+            shadow.setShadowBlurRadius_(11.0)
+            shadow.setShadowOffset_((0.0, 0.0))
+            shadow.set()
+            p.selected_background.set()
+            path.fill()
+            NSGraphicsContext.restoreGraphicsState()
+        else:
+            p.selected_background.set()
+            path.fill()
+        p.selected_border.set()
+        path.setLineWidth_(1.0)
+        path.stroke()
 
 
 class NoteList(NSObject):
@@ -176,7 +195,15 @@ class NoteList(NSObject):
         pin_edges(date, cell, top=56, leading=16, trailing=None, bottom=None)
 
         if note.category != ALL_NOTES:
-            tag = add(cell, label(note.category, NSFont.systemFontOfSize_(10), p.accent_strong))
-            pin_edges(tag, cell, top=56, leading=None, trailing=16, bottom=None)
+            chip = add(cell, rounded_view(p.pill_background, 6.0))
+            pin_edges(chip, cell, top=54, leading=None, trailing=16, bottom=None)
+            set_height(chip, 18)
+            chip_label = add(
+                chip, label(note.category, NSFont.systemFontOfSize_(10), p.accent_strong)
+            )
+            pin_edges(chip_label, chip, top=3, leading=8, trailing=8, bottom=None)
+            # Width the chip to its label.
+            chip_label.sizeToFit()
+            set_width(chip, float(chip_label.fittingSize().width) + 16.0)
 
         return cell

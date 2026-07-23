@@ -112,6 +112,31 @@ active-note delete / window close / quit. The editor augments — not replaces �
 the native `NSTextView` context menu via `textView:menu:forEvent:atIndex:`. The
 controller logic is unit-tested with an injected fake backend (no real audio).
 
+### Theming (Phase 5)
+
+`theme.py` is the single source of truth: a frozen `Theme` dataclass of ~50
+semantic tokens (hex strings) plus numeric decorative params (gradient/glow/
+shadow). Three first-class themes — **Storm Blue** (default), **Light**, **Deep
+Dark** — carry real handoff values. Because every field is required, a theme
+cannot be constructed with a missing token.
+
+`views/palette.py` resolves tokens to AppKit values dynamically (`palette.<token>`
+→ `NSColor`; numeric tokens pass through; a few legacy names are aliased) and
+provides fonts (SF Pro / New York / SF Mono), `window_gradient()`, `glow()`,
+`selection_glow()`, and `symbol_image()` (SF Symbols). **View code references
+semantic names only — never color literals.**
+
+**Live switching:** the window is built once; its content tree is built by
+`_install_content()`. `selectTheme:` flushes edits, captures the editor's
+selection + first-responder state, persists the `theme` preference, swaps the
+`Palette`, calls `_install_content()` again (a full rebuild → no stale colors),
+re-applies the filter (reloading the current note into the fresh editor), then
+restores the editor selection/focus. Each rebuild sets a per-theme
+`NSAppearance` (`darkAqua`/`aqua`) so native traffic lights, cursor, selection,
+and scrollbars match. Menu checkmarks are driven by `validateMenuItem_` +
+`theme.menu_state`. Storm Blue is the only theme with decorative glow
+(`glow_opacity`/`selected_shadow_opacity`).
+
 ## Note Markdown format
 
 See PRD §12. A note has a title (`# ...`), `Created` / `Updated` / `Category`

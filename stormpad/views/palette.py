@@ -1,17 +1,37 @@
-"""Resolve semantic :class:`~stormpad.theme.Theme` tokens to ``NSColor``.
+"""Resolve semantic :class:`~stormpad.theme.Theme` tokens to AppKit values.
 
-The single place hex strings become AppKit colors. View code asks the palette
-for semantic colors (``palette.accent``) and fonts, never for literals.
+The single place hex strings become ``NSColor`` and where fonts / SF Symbols /
+gradients are produced. View code asks the palette for semantic names
+(``palette.accent``, ``palette.selected_glow``) and never for literals.
+
+Token access is dynamic: ``palette.<token>`` returns the token's ``NSColor``
+(or the raw float for numeric tokens). A few legacy names are aliased so older
+view code keeps working.
 """
 
 from __future__ import annotations
 
-from AppKit import NSColor, NSFont
+from AppKit import (
+    NSColor,
+    NSFont,
+    NSFontWeightMedium,
+    NSFontWeightRegular,
+    NSFontWeightSemibold,
+    NSImage,
+    NSImageSymbolConfiguration,
+    NSImageSymbolScaleMedium,
+)
 
 from ..theme import Theme
 
-# NSFontDescriptorSystemDesign* constants (not always exported by PyObjC name).
 _DESIGN_SERIF = 1  # NSFontDescriptorSystemDesignSerif
+
+# Legacy token names -> current names (keeps pre-Phase-5 view code working).
+_ALIASES = {
+    "toolbar_background": "header_background",
+    "input_background": "search_background",
+    "danger": "destructive",
+}
 
 
 def color_from_hex(hex_str: str, alpha: float = 1.0) -> NSColor:
@@ -40,88 +60,67 @@ def mono_font(size: float) -> NSFont:
     return font if font is not None else NSFont.fontWithName_size_("Menlo", size)
 
 
+def _weight(name: str) -> float:
+    return {
+        "regular": NSFontWeightRegular,
+        "medium": NSFontWeightMedium,
+        "semibold": NSFontWeightSemibold,
+    }.get(name, NSFontWeightRegular)
+
+
+def symbol_image(name: str, *, size: float = 13.0, weight: str = "regular"):
+    """Return a template SF Symbol NSImage (tint via contentTintColor), or None."""
+    if not hasattr(NSImage, "imageWithSystemSymbolName_accessibilityDescription_"):
+        return None  # pragma: no cover
+    image = NSImage.imageWithSystemSymbolName_accessibilityDescription_(name, None)
+    if image is None:
+        return None
+    config = NSImageSymbolConfiguration.configurationWithPointSize_weight_scale_(
+        size, _weight(weight), NSImageSymbolScaleMedium
+    )
+    configured = image.imageWithSymbolConfiguration_(config)
+    result = configured if configured is not None else image
+    result.setTemplate_(True)
+    return result
+
+
 class Palette:
-    """Semantic NSColors + fonts derived from a :class:`Theme`."""
+    """Semantic NSColors + fonts + effects derived from a :class:`Theme`."""
 
     def __init__(self, theme: Theme) -> None:
         self.theme = theme
 
-    # Surfaces
-    @property
-    def app_background(self) -> NSColor:
-        return color_from_hex(self.theme.app_background)
+    def __getattr__(self, name: str):
+        # Only reached when normal attribute lookup fails (i.e. token names).
+        theme = object.__getattribute__(self, "theme")
+        real = _ALIASES.get(name, name)
+        if hasattr(theme, real):
+            value = getattr(theme, real)
+            if isinstance(value, str) and value.startswith("#"):
+                return color_from_hex(value)
+            return value
+        raise AttributeError(name)
 
-    @property
-    def toolbar_background(self) -> NSColor:
-        return color_from_hex(self.theme.toolbar_background)
+    # -- effects -------------------------------------------------------------
 
-    @property
-    def sidebar_background(self) -> NSColor:
-        return color_from_hex(self.theme.sidebar_background)
+    def color(self, token: str, alpha: float = 1.0) -> NSColor:
+        """Return a token color with an explicit alpha."""
+        real = _ALIASES.get(token, token)
+        return color_from_hex(getattr(self.theme, real), alpha)
 
-    @property
-    def note_list_background(self) -> NSColor:
-        return color_from_hex(self.theme.note_list_background)
+    def window_gradient(self) -> tuple[NSColor, NSColor]:
+        return (
+            color_from_hex(self.theme.gradient_top),
+            color_from_hex(self.theme.gradient_bottom),
+        )
 
-    @property
-    def editor_background(self) -> NSColor:
-        return color_from_hex(self.theme.editor_background)
+    def glow(self) -> NSColor | None:
+        """Radial background glow color at its theme opacity, or None if off."""
+        if self.theme.glow_opacity <= 0.0:
+            return None
+        return color_from_hex(self.theme.glow_color, self.theme.glow_opacity)
 
-    @property
-    def elevated_surface(self) -> NSColor:
-        return color_from_hex(self.theme.elevated_surface)
-
-    @property
-    def selected_background(self) -> NSColor:
-        return color_from_hex(self.theme.selected_background)
-
-    @property
-    def hover_background(self) -> NSColor:
-        return color_from_hex(self.theme.hover_background)
-
-    @property
-    def input_background(self) -> NSColor:
-        return color_from_hex(self.theme.input_background)
-
-    @property
-    def transcript_background(self) -> NSColor:
-        return color_from_hex(self.theme.transcript_background)
-
-    # Lines
-    @property
-    def border(self) -> NSColor:
-        return color_from_hex(self.theme.border)
-
-    @property
-    def separator(self) -> NSColor:
-        return color_from_hex(self.theme.separator)
-
-    # Text
-    @property
-    def text_primary(self) -> NSColor:
-        return color_from_hex(self.theme.text_primary)
-
-    @property
-    def text_secondary(self) -> NSColor:
-        return color_from_hex(self.theme.text_secondary)
-
-    @property
-    def text_muted(self) -> NSColor:
-        return color_from_hex(self.theme.text_muted)
-
-    # Accents / status
-    @property
-    def accent(self) -> NSColor:
-        return color_from_hex(self.theme.accent)
-
-    @property
-    def accent_strong(self) -> NSColor:
-        return color_from_hex(self.theme.accent_strong)
-
-    @property
-    def success(self) -> NSColor:
-        return color_from_hex(self.theme.success)
-
-    @property
-    def danger(self) -> NSColor:
-        return color_from_hex(self.theme.danger)
+    def selection_glow(self, alpha: float = 0.5) -> NSColor | None:
+        if self.theme.selected_shadow_opacity <= 0.0:
+            return None
+        return color_from_hex(self.theme.selected_glow, alpha)

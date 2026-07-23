@@ -27,10 +27,10 @@ from AppKit import (
 from Foundation import NSMakeRect, NSMakeSize, NSObject
 
 from ..models import Note, now_local
-from ..uihelpers import SaveStatus, format_relative, word_count
-from .controls import label, solid_view
-from .layout import add, pin_edges, set_height
-from .palette import Palette, mono_font, serif_font
+from ..uihelpers import SaveStatus, format_relative, status_style, word_count
+from .controls import icon_view, label, rounded_view, solid_view
+from .layout import add, pin_edges, set_height, set_width
+from .palette import Palette, mono_font, serif_font, symbol_image
 from .transcript import TranscriptSection
 
 _BODY_INSET = 96.0  # horizontal padding matching the design's centered column
@@ -60,15 +60,45 @@ class Editor(NSObject):
         p = self._palette
         self.view = solid_view(p.editor_background)
 
-        # Status row: save status + filename (left), word count (right).
-        self._status = add(
-            self.view, label("Saved locally", NSFont.boldSystemFontOfSize_(11.5), p.success)
-        )
-        pin_edges(self._status, self.view, top=52, leading=_BODY_INSET, trailing=None, bottom=None)
-        self._filename = add(self.view, label("", mono_font(11.0), p.text_muted))
+        # Status row: save-status pill + filename pill (left), word count (right).
+        self._status_pill = add(self.view, rounded_view(p.success_background, 7.0))
         pin_edges(
-            self._filename, self.view, top=52, leading=_BODY_INSET + 110, trailing=None, bottom=None
+            self._status_pill, self.view, top=48, leading=_BODY_INSET, trailing=None, bottom=None
         )
+        set_height(self._status_pill, 24)
+        set_width(self._status_pill, 128)
+        self._status_icon = add(
+            self._status_pill,
+            icon_view(symbol_image("checkmark", size=11, weight="semibold"), p.success),
+        )
+        pin_edges(
+            self._status_icon, self._status_pill, top=6, leading=9, trailing=None, bottom=None
+        )
+        set_width(self._status_icon, 13)
+        set_height(self._status_icon, 12)
+        self._status = add(
+            self._status_pill, label("Saved locally", NSFont.boldSystemFontOfSize_(11), p.success)
+        )
+        pin_edges(self._status, self._status_pill, top=5, leading=28, trailing=8, bottom=None)
+
+        self._filename_pill = add(self.view, rounded_view(p.pill_background, 7.0))
+        pin_edges(
+            self._filename_pill,
+            self.view,
+            top=48,
+            leading=_BODY_INSET + 140,
+            trailing=None,
+            bottom=None,
+        )
+        set_height(self._filename_pill, 24)
+        set_width(self._filename_pill, 250)
+        doc = add(self._filename_pill, icon_view(symbol_image("doc.text", size=11), p.text_muted))
+        pin_edges(doc, self._filename_pill, top=6, leading=9, trailing=None, bottom=None)
+        set_width(doc, 13)
+        set_height(doc, 12)
+        self._filename = add(self._filename_pill, label("", mono_font(10.5), p.text_muted))
+        pin_edges(self._filename, self._filename_pill, top=5, leading=28, trailing=8, bottom=None)
+
         self._wordcount = add(self.view, label("", NSFont.systemFontOfSize_(11.5), p.text_muted))
         pin_edges(
             self._wordcount, self.view, top=52, leading=None, trailing=_BODY_INSET, bottom=None
@@ -102,7 +132,7 @@ class Editor(NSObject):
         )
         set_height(divider, 1)
 
-        # Transcript section pinned to bottom (height toggled per note).
+        # Transcript card pinned to the bottom (always visible).
         self._transcript = TranscriptSection(p)
         add(self.view, self._transcript.view)
         pin_edges(
@@ -113,10 +143,7 @@ class Editor(NSObject):
             trailing=_BODY_INSET,
             bottom=24,
         )
-        self._transcript_height = self._transcript.view.heightAnchor().constraintEqualToConstant_(
-            0.0
-        )
-        self._transcript_height.setActive_(True)
+        set_height(self._transcript.view, TranscriptSection.SECTION_HEIGHT)
 
         # Body scroll + text view, filling between divider and transcript.
         scroll = add(self.view, NSScrollView.alloc().init())
@@ -173,9 +200,7 @@ class Editor(NSObject):
             )
             self._update_word_count()
             self.set_status(SaveStatus.SAVED)
-            height = TranscriptSection.SECTION_HEIGHT if note.transcript else 0.0
             self._transcript.set_blocks(note.transcript)
-            self._transcript_height.setConstant_(height)
             self.view.setHidden_(False)
         finally:
             self._loading = False
@@ -200,19 +225,28 @@ class Editor(NSObject):
     def set_status(self, status: SaveStatus) -> None:
         self._last_status = status
         p = self._palette
-        color = {
-            SaveStatus.SAVED: p.success,
-            SaveStatus.SAVING: p.text_muted,
-            SaveStatus.FAILED: p.danger,
-        }[status]
+        color_token, background_token, symbol = status_style(status)
+        color = getattr(p, color_token)
+        background = getattr(p, background_token)
         self._status.setStringValue_(status.value)
         self._status.setTextColor_(color)
+        self._status_pill.setBackgroundColor_(background)
+        image = symbol_image(symbol, size=11, weight="semibold")
+        if image is not None:
+            self._status_icon.setImage_(image)
+        self._status_icon.setContentTintColor_(color)
 
     @objc.python_method
     def flash_status(self, text: str) -> None:
         """Briefly show a transient status (e.g. 'Copied'), then restore."""
+        p = self._palette
         self._status.setStringValue_(text)
-        self._status.setTextColor_(self._palette.accent_strong)
+        self._status.setTextColor_(p.accent_strong)
+        self._status_pill.setBackgroundColor_(p.pill_background)
+        image = symbol_image("checkmark.circle", size=11, weight="semibold")
+        if image is not None:
+            self._status_icon.setImage_(image)
+        self._status_icon.setContentTintColor_(p.accent_strong)
         NSTimer.scheduledTimerWithTimeInterval_repeats_block_(
             1.4, False, lambda timer: self.set_status(self._last_status)
         )
@@ -224,6 +258,30 @@ class Editor(NSObject):
         if rng.length == 0:
             return ""
         return str(self._body.string().substringWithRange_(rng))
+
+    @objc.python_method
+    def body_is_first_responder(self) -> bool:
+        window = self.view.window()
+        return window is not None and window.firstResponder() == self._body
+
+    @objc.python_method
+    def body_selected_range(self) -> tuple[int, int]:
+        rng = self._body.selectedRange()
+        return (int(rng.location), int(rng.length))
+
+    @objc.python_method
+    def restore_selection(self, selection: tuple[int, int]) -> None:
+        """Reapply a (location, length) selection, clamped to the text length."""
+        from Foundation import NSMakeRange
+
+        length = self._body.string().length()
+        loc = min(max(selection[0], 0), length)
+        span = min(selection[1], length - loc)
+        self._body.setSelectedRange_(NSMakeRange(loc, span))
+
+    @objc.python_method
+    def set_transcript_append_target(self, target, action: str) -> None:
+        self._transcript.set_append_target(target, action)
 
     # -- helpers -------------------------------------------------------------
 

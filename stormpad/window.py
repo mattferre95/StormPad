@@ -16,11 +16,16 @@ import objc
 from AppKit import (
     NSAlert,
     NSAlertSecondButtonReturn,
+    NSAppearance,
+    NSAppearanceNameAqua,
+    NSAppearanceNameDarkAqua,
     NSBackingStoreBuffered,
     NSButton,
     NSColor,
     NSFont,
     NSImage,
+    NSImageLeft,
+    NSImageOnly,
     NSPasteboard,
     NSPasteboardTypeString,
     NSSplitViewController,
@@ -49,7 +54,7 @@ from .preferences import Preferences
 from .search import filter_by_category, search_notes
 from .session import NoteStore
 from .speech import SpeechController, SpeechUnavailableError
-from .theme import get_theme
+from .theme import get_theme, menu_state
 from .uihelpers import (
     AutosaveController,
     SaveStatus,
@@ -59,12 +64,12 @@ from .uihelpers import (
     is_speakable,
 )
 from .views import empty_state as es
-from .views.controls import flipped_view, solid_view
+from .views.controls import flipped_view, gradient_view, solid_view
 from .views.editor import Editor
 from .views.empty_state import EmptyState
 from .views.layout import add, pin_edges, set_height, set_width
 from .views.note_list import NoteList
-from .views.palette import Palette
+from .views.palette import Palette, symbol_image
 from .views.sidebar import Sidebar
 
 _AUTOSAVE_DELAY = 0.4
@@ -90,7 +95,8 @@ class MainController(NSObject):
             return None
         self._store: NoteStore = store
         self._prefs = Preferences(UserDefaultsBackend())
-        self._theme = get_theme(self._prefs.theme)
+        # STORMPAD_THEME is a dev/test hook to force the initial theme.
+        self._theme = get_theme(os.environ.get("STORMPAD_THEME") or self._prefs.theme)
         self._palette = Palette(self._theme)
         self._logo = self._load_logo()
 
@@ -122,37 +128,51 @@ class MainController(NSObject):
         return None
 
     @objc.python_method
-    def _make_button(self, title: str, action: str, *, primary: bool = False) -> NSButton:
+    def _toolbar_button(
+        self,
+        title: str,
+        action: str,
+        symbol: str,
+        *,
+        primary: bool = False,
+        icon_only: bool = False,
+        tint: object | None = None,
+    ) -> NSButton:
         p = self._palette
         button = NSButton.alloc().init()
-        button.setTitle_(("+  " + title) if primary else title)
         button.setBordered_(False)
         button.setWantsLayer_(True)
-        button.setFont_(
-            NSFont.boldSystemFontOfSize_(12.5) if primary else NSFont.systemFontOfSize_(12)
-        )
         button.setTarget_(self)
         button.setAction_(action)
+        button.setToolTip_(title)
         button.layer().setCornerRadius_(7.0)
-        button.sizeToFit()
-        width = float(button.fittingSize().width) + 22.0
+        image = symbol_image(symbol, size=12.5, weight="semibold" if primary else "medium")
+        if image is not None:
+            button.setImage_(image)
+            button.setImagePosition_(NSImageOnly if icon_only else NSImageLeft)
+            if hasattr(button, "setImageHugsTitle_"):
+                button.setImageHugsTitle_(True)
+        if not icon_only:
+            button.setTitle_(title)
+            button.setFont_(NSFont.systemFontOfSize_(12.5))
         if primary:
             button.setContentTintColor_(NSColor.whiteColor())
             button.layer().setBackgroundColor_(p.accent.CGColor())
         else:
-            button.setContentTintColor_(p.text_secondary)
-            button.layer().setBackgroundColor_(p.elevated_surface.CGColor())
+            button.setContentTintColor_(tint if tint is not None else p.text_secondary)
+            button.layer().setBackgroundColor_(p.toolbar_button_background.CGColor())
             button.layer().setBorderWidth_(1.0)
             button.layer().setBorderColor_(p.border.CGColor())
+        button.sizeToFit()
+        width = 30.0 if icon_only else float(button.fittingSize().width) + 24.0
         set_width(button, width)
-        set_height(button, 28)
+        set_height(button, 30)
         return button
 
     # -- window / layout -----------------------------------------------------
 
     @objc.python_method
     def _build_window(self) -> None:
-        p = self._palette
         style = (
             NSWindowStyleMaskTitled
             | NSWindowStyleMaskClosable
@@ -168,30 +188,57 @@ class MainController(NSObject):
         window.setTitlebarAppearsTransparent_(True)
         window.setTitleVisibility_(NSWindowTitleHidden)
         window.setMinSize_(_MIN_SIZE)
-        window.setBackgroundColor_(p.app_background)
         window.setDelegate_(self)
         window.setFrameAutosaveName_("StormPadWindow")
+        self._window = window
+        self._install_content()
+        window.center()
+        window.makeKeyAndOrderFront_(None)
 
-        root = solid_view(p.app_background)
-        window.setContentView_(root)
+    @objc.python_method
+    def _install_content(self) -> None:
+        """Build (or rebuild, on theme switch) the whole content view tree."""
+        p = self._palette
+        window = self._window
 
-        # Header bar with the action toolbar (right-aligned).
-        header = add(root, solid_view(p.toolbar_background))
+        # Per-theme appearance keeps traffic lights, cursor, selection, and
+        # scrollbars consistent with the theme.
+        appearance = NSAppearance.appearanceNamed_(
+            NSAppearanceNameDarkAqua if self._theme.is_dark else NSAppearanceNameAqua
+        )
+        window.setAppearance_(appearance)
+        window.setBackgroundColor_(p.app_background)
+
+        top, bottom = p.window_gradient()
+        root = gradient_view(top, bottom)
+
+        # Header bar + action toolbar (right-aligned).
+        header = add(root, solid_view(p.header_background))
         pin_edges(header, root, top=0, leading=0, trailing=0, bottom=None)
         set_height(header, _HEADER_HEIGHT)
+        header_line = add(root, solid_view(p.separator))
+        pin_edges(header_line, root, top=_HEADER_HEIGHT, leading=0, trailing=0, bottom=None)
+        set_height(header_line, 1)
 
-        copy_b = self._make_button("Copy Note", "copyNote:")
-        append_b = self._make_button("Append Transcript", "appendTranscript:")
-        open_b = self._make_button("Open File", "openFile:")
-        reveal_b = self._make_button("Reveal", "revealInFinder:")
-        delete_b = self._make_button("Delete", "deleteNote:")
-        delete_b.setContentTintColor_(p.danger)
-        new_b = self._make_button("New Note", "newNote:", primary=True)
+        copy_b = self._toolbar_button(
+            "Copy Note", "copyNote:", "doc.on.doc", tint=p.accent_strong
+        )
+        append_b = self._toolbar_button("Append Transcript", "appendTranscript:", "waveform")
+        open_b = self._toolbar_button(
+            "Open File", "openFile:", "arrow.up.forward.square", icon_only=True
+        )
+        reveal_b = self._toolbar_button(
+            "Reveal in Finder", "revealInFinder:", "folder", icon_only=True
+        )
+        delete_b = self._toolbar_button(
+            "Delete Note", "deleteNote:", "trash", icon_only=True, tint=p.danger
+        )
+        new_b = self._toolbar_button("New Note", "newNote:", "plus", primary=True)
         self._action_buttons = [copy_b, append_b, open_b, reveal_b, delete_b]
 
         stack = NSStackView.alloc().init()
         stack.setOrientation_(NSUserInterfaceLayoutOrientationHorizontal)
-        stack.setSpacing_(6.0)
+        stack.setSpacing_(7.0)
         for button in [copy_b, append_b, open_b, reveal_b, delete_b, new_b]:
             stack.addArrangedSubview_(button)
         add(header, stack)
@@ -202,10 +249,7 @@ class MainController(NSObject):
 
         # Three-column split.
         self._sidebar = Sidebar(
-            self._palette,
-            self._logo,
-            on_category=self._on_category,
-            search_delegate=self,
+            self._palette, self._logo, on_category=self._on_category, search_delegate=self
         )
         self._note_list = NoteList.alloc().initWithPalette_onSelect_(
             self._palette, self._on_note_selected
@@ -213,9 +257,9 @@ class MainController(NSObject):
         self._editor = Editor.alloc().initWithPalette_onTitle_onBody_(
             self._palette, self._on_title_edited, self._on_body_edited
         )
-        self._editor.speech_target = self  # context-menu speech actions
+        self._editor.speech_target = self
+        self._editor.set_transcript_append_target(self, "appendTranscript:")
 
-        # Editor column = editor + empty-state overlay.
         editor_col = flipped_view()
         editor_col.setWantsLayer_(True)
         add(editor_col, self._editor.view)
@@ -248,12 +292,9 @@ class MainController(NSObject):
         self._split_vc = split
 
         add(root, split.view())
-        pin_edges(split.view(), root, top=_HEADER_HEIGHT, leading=0, trailing=0, bottom=0)
+        pin_edges(split.view(), root, top=_HEADER_HEIGHT + 1, leading=0, trailing=0, bottom=0)
 
-        self._window = window
-        window.center()
-        window.makeKeyAndOrderFront_(None)
-        # Set initial divider positions (after the window has a real size).
+        window.setContentView_(root)
         split.splitView().setPosition_ofDividerAtIndex_(_SIDEBAR_WIDTH, 0)
         split.splitView().setPosition_ofDividerAtIndex_(_SIDEBAR_WIDTH + _LIST_WIDTH, 1)
 
@@ -540,6 +581,27 @@ class MainController(NSObject):
     def stopSpeaking_(self, sender):  # noqa: N802
         self._speech.stop()
 
+    @objc.IBAction
+    def selectTheme_(self, sender):  # noqa: N802
+        theme_id = sender.representedObject()
+        if theme_id is None or theme_id == self._theme.id:
+            return
+        self._autosave.flush()
+        was_focused = self._editor.body_is_first_responder()
+        selection = self._editor.body_selected_range()
+
+        self._prefs.theme = theme_id  # persists; validated
+        self._theme = get_theme(theme_id)
+        self._palette = Palette(self._theme)
+
+        self._install_content()  # rebuild the whole tree -> no stale colors
+        self._apply_filter()  # repopulate + load current note into new editor
+
+        if self._current_id is not None:
+            self._editor.restore_selection(selection)
+            if was_focused:
+                self._editor.focus_body()
+
     def validateMenuItem_(self, item):  # noqa: N802
         name = str(item.action())
         note_actions = (
@@ -555,6 +617,9 @@ class MainController(NSObject):
             return is_speakable(self._editor.selected_body_text())
         if name == "stopSpeaking:":
             return self._speech.is_speaking
+        if name == "selectTheme:":
+            item.setState_(menu_state(item.representedObject(), self._theme.id))
+            return True
         return True
 
     # -- search field delegate -----------------------------------------------
