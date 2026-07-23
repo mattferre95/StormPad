@@ -21,10 +21,20 @@ from pathlib import Path
 
 from . import paths, storage
 from .attachments import note_attachment_dir
-from .errors import NoteNotFoundError, StorageError
+from .block_parser import parse_blocks
+from .block_serializer import serialize_blocks
+from .blocks import BlockType
+from .errors import (
+    InvalidProjectError,
+    NoteNotFoundError,
+    ProjectNotEmptyError,
+    ProjectNotFoundError,
+    StorageError,
+)
 from .models import (
     DEFAULT_CATEGORY,
     Note,
+    Project,
     TranscriptBlock,
     format_transcript_timestamp,
     now_local,
@@ -91,15 +101,84 @@ class NoteStore:
                 return path
         return self._notes_dir / f"{note_id}.md"
 
+    def list_projects(self) -> list[Project]:
+        """Return valid filesystem-backed projects in stable creation order."""
+        return storage.list_projects(self._notes_dir)
+
+    def load_project(self, project_id: str) -> Project:
+        project = next(
+            (candidate for candidate in self.list_projects() if candidate.id == project_id),
+            None,
+        )
+        if project is None:
+            raise ProjectNotFoundError(f"project not found: {project_id}")
+        return project
+
+    def create_project(self, name: str) -> Project:
+        """Create a real project directory with stable metadata."""
+        display_name = str(name).strip()
+        if not display_name:
+            raise InvalidProjectError("project name must not be empty")
+        self.ensure_dir()
+        created = self._clock()
+        project = Project(
+            id=str(uuid.uuid4()),
+            path=storage.unique_project_path(self._notes_dir, display_name),
+            name=display_name,
+            created_at=created,
+            updated_at=created,
+        )
+        storage.write_project(project)
+        return project
+
+    def rename_project(self, project_id: str, name: str) -> Project:
+        """Rename project metadata and its safe folder without changing identity."""
+        display_name = str(name).strip()
+        if not display_name:
+            raise InvalidProjectError("project name must not be empty")
+        project = self.load_project(project_id)
+        previous_path = project.path
+        previous_name = project.name
+        previous_updated = project.updated_at
+        target = storage.unique_project_path(
+            self._notes_dir,
+            display_name,
+            excluding=previous_path,
+        )
+        try:
+            if target != previous_path:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                os.replace(previous_path, target)
+            project.path = target
+            project.name = display_name
+            project.updated_at = self._clock()
+            storage.write_project(project)
+        except (OSError, StorageError):
+            if target != previous_path and target.exists() and not previous_path.exists():
+                os.replace(target, previous_path)
+            project.path = previous_path
+            project.name = previous_name
+            project.updated_at = previous_updated
+            raise
+        return project
+
     # -- Create ---------------------------------------------------------------
 
-    def create_note(self, title: str = "Untitled Note", category: str = DEFAULT_CATEGORY) -> Note:
+    def create_note(
+        self,
+        title: str = "Untitled Note",
+        category: str = DEFAULT_CATEGORY,
+        *,
+        project_id: str | None = None,
+    ) -> Note:
         """Create, persist, and return a new note."""
         validate_category(category)
         self.ensure_dir()
+        project = self.load_project(project_id) if project_id else None
         created = self._clock()
         filename = storage.build_filename(title)
-        path = storage.unique_path(self._notes_dir, filename)
+        directory = project.path if project is not None else self._notes_dir
+        path = storage.unique_path(directory, filename)
         note = Note(
             id=str(uuid.uuid4()),
             path=path,
@@ -109,6 +188,7 @@ class NoteStore:
             created_at=created,
             updated_at=created,
             transcript=[],
+            project_id=project.id if project is not None else None,
         )
         storage.write_note(note)
         return note
@@ -123,13 +203,24 @@ class NoteStore:
         note = storage.read_note(path)
         if note.id != note_id and note.legacy_id != note_id:
             raise NoteNotFoundError(f"note not found: {note_id}")
+        note.project_id = self._project_id_for_path(path)
         return note
 
     def list_notes(self) -> list[Note]:
         """Return all notes, most recently updated first."""
-        notes = [storage.read_note(p) for p in storage.list_note_paths(self._notes_dir)]
+        notes = []
+        for path in storage.list_note_paths(self._notes_dir):
+            note = storage.read_note(path)
+            note.project_id = self._project_id_for_path(path)
+            notes.append(note)
         notes.sort(key=lambda n: n.updated_at, reverse=True)
         return notes
+
+    def _project_id_for_path(self, path: Path) -> str | None:
+        return next(
+            (project.id for project in self.list_projects() if path.parent == project.path),
+            None,
+        )
 
     # -- Update ---------------------------------------------------------------
 
@@ -177,6 +268,69 @@ class NoteStore:
         note.set_category(category, self._clock())
         storage.write_note(note)
         return note
+
+    # -- Project membership ---------------------------------------------------
+
+    def move_note_to_project(self, note_id: str, project_id: str | None) -> Note:
+        """Move a note between Unfiled and a project, preserving UUID/attachments."""
+        note = self.load_note(note_id)
+        project = self.load_project(project_id) if project_id else None
+        destination_dir = project.path if project is not None else self._notes_dir
+        destination_dir.mkdir(parents=True, exist_ok=True)
+        old_path = note.path
+        old_body = note.body
+        old_project_id = note.project_id
+        target = storage.unique_path(
+            destination_dir,
+            old_path.name,
+            excluding=old_path,
+        )
+        if target == old_path and old_project_id == project_id:
+            return note
+        note.body = self._body_for_moved_note(note, target)
+        note.project_id = project.id if project is not None else None
+        try:
+            os.replace(old_path, target)
+            note.path = target
+            storage.write_note(note)
+        except (OSError, StorageError):
+            if target.exists() and not old_path.exists():
+                os.replace(target, old_path)
+            note.path = old_path
+            note.body = old_body
+            note.project_id = old_project_id
+            raise
+        return note
+
+    def remove_note_from_project(self, note_id: str) -> Note:
+        return self.move_note_to_project(note_id, None)
+
+    def _body_for_moved_note(self, note: Note, new_path: Path) -> str:
+        managed_root = note_attachment_dir(self._notes_dir, note.id).resolve()
+        changed = False
+        blocks = parse_blocks(note.body)
+        for block in blocks:
+            if block.kind not in (BlockType.IMAGE, BlockType.FILE) or not block.target:
+                continue
+            candidate = (note.path.parent / block.target).resolve()
+            try:
+                candidate.relative_to(managed_root)
+            except ValueError:
+                continue
+            block.target = Path(os.path.relpath(candidate, new_path.parent)).as_posix()
+            changed = True
+        return serialize_blocks(blocks) if changed else note.body
+
+    def delete_project(self, project_id: str, *, move_notes_to_unfiled: bool = False) -> Path:
+        """Delete a project safely, never deleting its notes implicitly."""
+        project = self.load_project(project_id)
+        notes = [note for note in self.list_notes() if note.project_id == project.id]
+        if notes and not move_notes_to_unfiled:
+            raise ProjectNotEmptyError(f'project "{project.name}" contains {len(notes)} note(s)')
+        for note in notes:
+            self.remove_note_from_project(note.id)
+        self._delete(project.path)
+        return project.path
 
     # -- Transcript -----------------------------------------------------------
 

@@ -23,6 +23,8 @@ DRAFTS = "Drafts"
 CATEGORIES: tuple[str, ...] = (IDEAS, SESSIONS, DRAFTS)
 DEFAULT_CATEGORY = IDEAS
 ALL_NOTES = "All Notes"  # filter sentinel, never written to disk
+UNFILED = "Unfiled"
+UNFILED_PROJECT_ID = "__unfiled__"
 
 
 def validate_category(category: str) -> str:
@@ -84,9 +86,18 @@ class TranscriptBlock:
     text: str
 
 
-def remove_transcript_chunk(
-    chunks: list[TranscriptBlock], index: int
-) -> list[TranscriptBlock]:
+@dataclass
+class Project:
+    """Filesystem-backed grouping for related notes."""
+
+    id: str
+    path: Path
+    name: str
+    created_at: datetime
+    updated_at: datetime
+
+
+def remove_transcript_chunk(chunks: list[TranscriptBlock], index: int) -> list[TranscriptBlock]:
     """Return transcript chunks with one valid index removed."""
     result = list(chunks)
     if 0 <= index < len(result):
@@ -134,6 +145,7 @@ class Note:
     transcript_collapsed: bool = False
     id_persisted: bool = field(default=True, compare=False)
     legacy_id: str | None = field(default=None, compare=False)
+    project_id: str | None = None
 
     def __post_init__(self) -> None:
         validate_category(self.category)

@@ -135,7 +135,7 @@ def _build_menu(app, controller) -> None:
         submenu = NSMenu.alloc().initWithTitle_(title)
         parent.setSubmenu_(submenu)
         for token in COLOR_TOKENS:
-            color_title = token.replace("_", " ").title()
+            color_title = controller.color_menu_title(token, mode)
             entry = add_item(
                 submenu, color_title, "chooseColor:", "", target=controller
             )
@@ -153,7 +153,7 @@ def _build_menu(app, controller) -> None:
     add_item(view_menu, "Collapse Notes", "toggleNotesPanel:", "", target=controller)
     add_item(
         view_menu,
-        "Show Block Controls on Hover",
+        "Show Add Block on Hover",
         "toggleBlockControls:",
         "",
         target=controller,

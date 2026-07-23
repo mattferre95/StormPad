@@ -15,7 +15,16 @@ TZ = timezone(timedelta(hours=2))
 BASE = datetime(2026, 7, 23, 14, 30, 0, tzinfo=TZ)
 
 
-def note(idx: int, *, title="", body="", category=models.IDEAS, transcript=None, minutes=0):
+def note(
+    idx: int,
+    *,
+    title="",
+    body="",
+    category=models.IDEAS,
+    transcript=None,
+    minutes=0,
+    project_id=None,
+):
     ts = BASE + timedelta(minutes=minutes)
     return Note(
         id=f"n{idx}",
@@ -26,6 +35,7 @@ def note(idx: int, *, title="", body="", category=models.IDEAS, transcript=None,
         created_at=ts,
         updated_at=ts,
         transcript=transcript or [],
+        project_id=project_id,
     )
 
 
@@ -124,3 +134,32 @@ def test_all_notes_and_none_do_not_filter(notes):
 def test_filter_by_category_invalid(notes):
     with pytest.raises(InvalidCategoryError):
         search.filter_by_category(notes, "Bogus")
+
+
+def test_all_notes_unfiled_and_project_filters(notes):
+    notes[0].project_id = "build"
+    notes[1].project_id = "stormpad"
+    assert [item.id for item in search.filter_by_project(notes, None)] == [
+        "n1",
+        "n2",
+        "n3",
+        "n4",
+    ]
+    assert [item.id for item in search.filter_by_project(notes, "build")] == ["n1"]
+    assert [item.id for item in search.filter_by_project(notes, models.UNFILED_PROJECT_ID)] == [
+        "n3",
+        "n4",
+    ]
+
+
+def test_search_across_projects_and_with_project_filter(notes):
+    notes[0].project_id = "build"
+    notes[1].project_id = "stormpad"
+    assert [result.note.id for result in search.search_notes(notes, "voice")] == [
+        "n1",
+        "n2",
+        "n3",
+    ]
+    assert [
+        result.note.id for result in search.search_notes(notes, "voice", project_id="build")
+    ] == ["n1"]

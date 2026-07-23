@@ -80,6 +80,23 @@ class _ThemedRowView(NSTableRowView):
         indicator.fill()
 
 
+class NoteTableView(NSTableView):
+    """Table view that asks its owner for a selected-note context menu."""
+
+    def menuForEvent_(self, event):  # noqa: N802
+        owner = getattr(self, "stormpad_owner", None)
+        if owner is None:
+            return objc.super(NoteTableView, self).menuForEvent_(event)
+        point = self.convertPoint_fromView_(event.locationInWindow(), None)
+        row = int(self.rowAtPoint_(point))
+        if not 0 <= row < len(owner._notes):
+            return None
+        self.selectRowIndexes_byExtendingSelection_(
+            NSIndexSet.indexSetWithIndex_(row), False
+        )
+        return owner.menu_for_note(owner._notes[row])
+
+
 class NoteList(NSObject):
     """Table of notes; also its own data source & delegate."""
 
@@ -96,6 +113,7 @@ class NoteList(NSObject):
         self._selected_id: str | None = None
         self._suppress = False
         self._collapsed = False
+        self._menu_provider = None
         self._build()
         return self
 
@@ -134,7 +152,8 @@ class NoteList(NSObject):
         scroll.setAutohidesScrollers_(True)
         pin_edges(scroll, self.view, top=104, leading=0, trailing=0, bottom=0)
 
-        table = NSTableView.alloc().init()
+        table = NoteTableView.alloc().init()
+        table.stormpad_owner = self
         table.setBackgroundColor_(p.note_list_background)
         table.setHeaderView_(None)
         table.setRowHeight_(78.0)
@@ -210,6 +229,14 @@ class NoteList(NSObject):
     def selected_note(self) -> Note | None:
         return next((n for n in self._notes if n.id == self._selected_id), None)
 
+    @objc.python_method
+    def set_menu_provider(self, provider) -> None:
+        self._menu_provider = provider
+
+    @objc.python_method
+    def menu_for_note(self, note: Note):
+        return self._menu_provider(note) if self._menu_provider is not None else None
+
     # -- NSTableView data source / delegate ----------------------------------
 
     def numberOfRowsInTableView_(self, table):  # noqa: N802
@@ -245,11 +272,7 @@ class NoteList(NSObject):
             cell,
             label(
                 note.title or "Untitled Note",
-                (
-                    NSFont.boldSystemFontOfSize_(14)
-                    if selected
-                    else NSFont.systemFontOfSize_(14)
-                ),
+                (NSFont.boldSystemFontOfSize_(14) if selected else NSFont.systemFontOfSize_(14)),
                 p.text_primary,
             ),
         )

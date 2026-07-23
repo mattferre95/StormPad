@@ -12,7 +12,7 @@ import re
 from dataclasses import dataclass, field
 
 from .errors import InvalidCategoryError
-from .models import ALL_NOTES, CATEGORIES, Note
+from .models import ALL_NOTES, CATEGORIES, UNFILED_PROJECT_ID, Note
 
 FIELD_TITLE = "title"
 FIELD_BODY = "body"
@@ -58,12 +58,25 @@ def filter_by_category(notes: list[Note], category: str | None) -> list[Note]:
     return [n for n in notes if n.category == category]
 
 
+def filter_by_project(notes: list[Note], project_id: str | None) -> list[Note]:
+    """Filter by project identity; ``None`` means all and Unfiled means no project."""
+    if project_id is None:
+        return list(notes)
+    if project_id == UNFILED_PROJECT_ID:
+        return [note for note in notes if note.project_id is None]
+    return [note for note in notes if note.project_id == project_id]
+
+
 def _spans(text: str, pattern: re.Pattern[str], field_name: str) -> list[Match]:
     return [Match(field_name, m.start(), m.end()) for m in pattern.finditer(text)]
 
 
 def search_notes(
-    notes: list[Note], query: str, *, category: str | None = None
+    notes: list[Note],
+    query: str,
+    *,
+    category: str | None = None,
+    project_id: str | None = None,
 ) -> list[SearchResult]:
     """Search notes by title, body, and transcript text.
 
@@ -73,7 +86,7 @@ def search_notes(
     - Results are ordered by most recently updated.
     - ``category`` filters independently of the text query.
     """
-    pool = filter_by_category(notes, category)
+    pool = filter_by_project(filter_by_category(notes, category), project_id)
     pool.sort(key=lambda n: n.updated_at, reverse=True)
 
     trimmed = (query or "").strip()

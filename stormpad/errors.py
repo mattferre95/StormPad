@@ -22,6 +22,10 @@ class InvalidThemeError(StormPadError, ValueError):
     """A theme id outside the allowed set was supplied via a strict API."""
 
 
+class InvalidProjectError(StormPadError, ValueError):
+    """A requested project name or identifier is invalid."""
+
+
 class EmptyTranscriptError(StormPadError, ValueError):
     """Attempted to append a transcript block with empty text."""
 
@@ -43,6 +47,14 @@ class NotesDirectoryError(StorageError):
 
 class NoteNotFoundError(StorageError):
     """No note exists on disk for the requested id."""
+
+
+class ProjectNotFoundError(StorageError):
+    """No project exists on disk for the requested id."""
+
+
+class ProjectNotEmptyError(StorageError):
+    """A populated project was asked to be deleted without moving its notes."""
 
 
 class AtomicWriteError(StorageError):

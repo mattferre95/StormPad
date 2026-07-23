@@ -18,11 +18,13 @@ from stormpad.uihelpers import (
     block_gutter_canvas_y,
     block_gutter_layout,
     block_index_for_location,
+    block_indices_for_selection,
     choose_selected_note,
     copy_text,
     default_new_category,
     format_relative,
     formatting_toolbar_visible,
+    full_note_selection_ranges,
     gutter_hover_hit,
     is_speakable,
     next_selection_after_delete,
@@ -72,6 +74,18 @@ def test_preview_hides_markdown_formatting():
 def test_word_count():
     assert word_count("") == 0
     assert word_count("one two   three\nfour") == 4
+
+
+def test_selection_maps_utf16_ranges_across_multiple_blocks():
+    native = "Alpha\nBéta 😀\nGamma"
+    assert block_indices_for_selection(native, 2, 13) == [0, 1, 2]
+    assert block_index_for_location(native, 13) == 1
+
+
+def test_full_note_selection_helper_covers_title_and_all_blocks():
+    title_range, body_range = full_note_selection_ranges("Storm 😀", "First\nSecond\nThird")
+    assert title_range == (0, 8)
+    assert body_range == (0, 18)
 
 
 # -- relative time -------------------------------------------------------------
@@ -279,18 +293,20 @@ def test_add_block_menu_state():
 def test_block_gutter_geometry_never_overlaps_text(text_x):
     layout = block_gutter_layout(text_x, 240.0)
     assert layout.does_not_overlap_text
-    assert layout.add.max_x < layout.drag.x
-    assert layout.drag.max_x == text_x - layout.clearance
-    assert layout.add.y == layout.drag.y == 240.0
+    assert layout.add.max_x == text_x - layout.clearance
+    assert layout.add.y == 240.0
 
 
 def test_block_gutter_scroll_offset_mapping():
-    assert block_gutter_canvas_y(
-        scroll_origin_y=102,
-        text_inset_y=12,
-        block_origin_y=240,
-        scroll_offset_y=80,
-    ) == 274
+    assert (
+        block_gutter_canvas_y(
+            scroll_origin_y=102,
+            text_inset_y=12,
+            block_origin_y=240,
+            scroll_offset_y=80,
+        )
+        == 274
+    )
 
 
 def test_gutter_hover_hit_testing_and_hidden_states():

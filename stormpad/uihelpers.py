@@ -119,13 +119,12 @@ class GutterRect:
 @dataclass(frozen=True)
 class BlockGutterLayout:
     add: GutterRect
-    drag: GutterRect
     text_origin_x: float
     clearance: float
 
     @property
     def does_not_overlap_text(self) -> bool:
-        return self.drag.max_x + self.clearance <= self.text_origin_x
+        return self.add.max_x + self.clearance <= self.text_origin_x
 
 
 def block_gutter_layout(
@@ -133,15 +132,12 @@ def block_gutter_layout(
     y: float,
     *,
     control_size: float = 28.0,
-    control_gap: float = 4.0,
     text_clearance: float = 8.0,
 ) -> BlockGutterLayout:
-    """Place add + drag controls wholly to the left of the text column."""
-    drag_x = text_origin_x - text_clearance - control_size
-    add_x = drag_x - control_gap - control_size
+    """Place the sole add control wholly to the left of the text column."""
+    add_x = text_origin_x - text_clearance - control_size
     return BlockGutterLayout(
         add=GutterRect(add_x, y, control_size, control_size),
-        drag=GutterRect(drag_x, y, control_size, control_size),
         text_origin_x=text_origin_x,
         clearance=text_clearance,
     )
@@ -168,17 +164,49 @@ def gutter_hover_hit(
     interactive: bool,
 ) -> bool:
     """Whether a pointer is in the dedicated interactive block-gutter strip."""
-    return (
-        interactive
-        and 0.0 <= x <= gutter_width
-        and block_area_top <= y <= block_area_bottom
-    )
+    return interactive and 0.0 <= x <= gutter_width and block_area_top <= y <= block_area_bottom
 
 
 def block_index_for_location(native_text: str, location: int) -> int:
-    """Resolve a UTF-16-compatible native location to its logical block line."""
-    location = min(max(int(location), 0), len(native_text))
-    return native_text[:location].count("\n")
+    """Resolve a Cocoa UTF-16 location to its logical block line."""
+    location = min(max(int(location), 0), _utf16_length(native_text))
+    consumed = 0
+    for index, line in enumerate(native_text.split("\n")):
+        boundary = consumed + _utf16_length(line)
+        if location <= boundary:
+            return index
+        consumed = boundary + 1
+    return max(0, native_text.count("\n"))
+
+
+def block_indices_for_selection(native_text: str, location: int, length: int) -> list[int]:
+    """Map an actual Cocoa selection range to all intersected block lines."""
+    total = _utf16_length(native_text)
+    start = min(max(int(location), 0), total)
+    end = min(max(start + int(length), start), total)
+    if end == start:
+        return [block_index_for_location(native_text, start)]
+    result: list[int] = []
+    cursor = 0
+    lines = native_text.split("\n")
+    for index, line in enumerate(lines):
+        content_end = cursor + _utf16_length(line)
+        line_end = content_end + (1 if index < len(lines) - 1 else 0)
+        if cursor < end and line_end > start:
+            result.append(index)
+        cursor = line_end
+    return result
+
+
+def full_note_selection_ranges(
+    title: str, native_body: str
+) -> tuple[tuple[int, int], tuple[int, int]]:
+    """Return Cocoa ranges covering the complete title and body canvases."""
+    return ((0, _utf16_length(title)), (0, _utf16_length(native_body)))
+
+
+def _utf16_length(value: str) -> int:
+    return len(value.encode("utf-16-le")) // 2
 
 
 def formatting_toolbar_visible(*, selection_length: int, editor_focused: bool) -> bool:

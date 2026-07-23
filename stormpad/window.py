@@ -20,6 +20,7 @@ from AppKit import (
     NSAppearanceNameAqua,
     NSAppearanceNameDarkAqua,
     NSBackingStoreBuffered,
+    NSBitmapImageFileTypePNG,
     NSButton,
     NSColor,
     NSFont,
@@ -50,16 +51,28 @@ from AppKit import (
     NSWindowTitleHidden,
     NSWorkspace,
 )
-from Foundation import NSURL, NSMakeRect, NSObject
+from Foundation import NSURL, NSMakeRect, NSObject, NSRunLoop, NSRunLoopCommonModes
 
 from . import attachments, paths
 from .blocks import Block, BlockType, InlineRun
 from .defaults import UserDefaultsBackend
-from .errors import NoteNotFoundError, NotesDirectoryError, StorageError
+from .errors import (
+    InvalidProjectError,
+    NoteNotFoundError,
+    NotesDirectoryError,
+    ProjectNotFoundError,
+    StorageError,
+)
 from .exporter import export_note_txt, note_to_plain_text
-from .models import ALL_NOTES, CATEGORIES, now_local
+from .models import (
+    ALL_NOTES,
+    CATEGORIES,
+    UNFILED,
+    UNFILED_PROJECT_ID,
+    now_local,
+)
 from .preferences import Preferences
-from .search import filter_by_category, search_notes
+from .search import filter_by_category, filter_by_project, search_notes
 from .session import NoteStore
 from .speech import SpeechController, SpeechUnavailableError
 from .theme import get_theme, menu_state
@@ -106,8 +119,7 @@ class MainController(NSObject):
         self._store: NoteStore = store
         self._prefs = Preferences(
             UserDefaultsBackend(
-                os.environ.get("STORMPAD_DEFAULTS_SUITE")
-                or "com.stormpad.StormPad"
+                os.environ.get("STORMPAD_DEFAULTS_SUITE") or "com.stormpad.StormPad"
             )
         )
         # STORMPAD_THEME is a dev/test hook to force the initial theme.
@@ -116,12 +128,11 @@ class MainController(NSObject):
         self._logo = self._load_logo()
 
         self._category = self._prefs.last_category
+        self._project_id = self._prefs.selected_project_id
         self._query = os.environ.get("STORMPAD_INITIAL_QUERY", "").strip()
         self._current_id: str | None = self._prefs.last_note_id
         self._displayed: list = []
-        self._dev_notes_collapsed = (
-            True if os.environ.get("STORMPAD_COLLAPSE_NOTES") else None
-        )
+        self._dev_notes_collapsed = True if os.environ.get("STORMPAD_COLLAPSE_NOTES") else None
 
         self._autosave = AutosaveController(
             self._perform_save,
@@ -142,7 +153,7 @@ class MainController(NSObject):
         self._apply_filter()
         if os.environ.get("STORMPAD_FOCUS_EDITOR"):
             NSTimer.scheduledTimerWithTimeInterval_repeats_block_(
-                0.15, False, lambda timer: self._apply_editor_dev_focus()
+                0.3, False, lambda timer: self._apply_editor_dev_focus()
             )
         if os.environ.get("STORMPAD_SHOW_SETTINGS"):
             NSTimer.scheduledTimerWithTimeInterval_repeats_block_(
@@ -150,7 +161,7 @@ class MainController(NSObject):
             )
         if os.environ.get("STORMPAD_HOVER_BLOCK"):
             NSTimer.scheduledTimerWithTimeInterval_repeats_block_(
-                0.2, False, lambda timer: self._apply_hover_dev_hook()
+                0.4, False, lambda timer: self._apply_hover_dev_hook()
             )
         if os.environ.get("STORMPAD_SHOW_NOTE_INFO"):
             NSTimer.scheduledTimerWithTimeInterval_repeats_block_(
@@ -162,9 +173,36 @@ class MainController(NSObject):
             NSTimer.scheduledTimerWithTimeInterval_repeats_block_(
                 0.25, False, lambda timer: self.exportNoteTXT_(None)
             )
-        if os.environ.get("STORMPAD_DRAG_INSERTION"):
+        if os.environ.get("STORMPAD_CREATE_PROJECT_DIALOG"):
             NSTimer.scheduledTimerWithTimeInterval_repeats_block_(
-                0.25, False, lambda timer: self._apply_drag_dev_hook()
+                0.25, False, lambda timer: self.createProject_(None)
+            )
+        if os.environ.get("STORMPAD_SELECT_PROJECT"):
+            NSTimer.scheduledTimerWithTimeInterval_repeats_block_(
+                0.15, False, lambda timer: self._apply_project_dev_hook()
+            )
+        if os.environ.get("STORMPAD_SELECT_NOTE"):
+            NSTimer.scheduledTimerWithTimeInterval_repeats_block_(
+                0.2, False, lambda timer: self._apply_note_dev_hook()
+            )
+        if os.environ.get("STORMPAD_SHOW_MOVE_PROJECT_MENU"):
+            NSTimer.scheduledTimerWithTimeInterval_repeats_block_(
+                0.25, False, lambda timer: self._show_move_project_dev_menu()
+            )
+        if os.environ.get("STORMPAD_SELECT_ALL_NOTE"):
+            NSTimer.scheduledTimerWithTimeInterval_repeats_block_(
+                0.4, False, lambda timer: self._editor.select_all_note_content()
+            )
+        if os.environ.get("STORMPAD_DELETE_ALL_NOTE"):
+            NSTimer.scheduledTimerWithTimeInterval_repeats_block_(
+                0.45, False, lambda timer: self._apply_delete_all_dev_hook()
+            )
+        if os.environ.get("STORMPAD_CAPTURE_PATH"):
+            capture_timer = NSTimer.timerWithTimeInterval_repeats_block_(
+                0.8, False, lambda timer: self._capture_dev_windows()
+            )
+            NSRunLoop.mainRunLoop().addTimer_forMode_(
+                capture_timer, NSRunLoopCommonModes
             )
         return self
 
@@ -293,11 +331,17 @@ class MainController(NSObject):
 
         # Three-column split.
         self._sidebar = Sidebar(
-            self._palette, self._logo, on_category=self._on_category, search_delegate=self
+            self._palette,
+            self._logo,
+            on_category=self._on_category,
+            on_project=self._on_project,
+            search_delegate=self,
+            project_action_target=self,
         )
         self._note_list = NoteList.alloc().initWithPalette_onSelect_onCollapse_(
             self._palette, self._on_note_selected, self._toggle_notes_panel
         )
+        self._note_list.set_menu_provider(self._note_context_menu)
         self._editor = Editor.alloc().initWithPalette_onTitle_onBody_onAttachment_(
             self._palette,
             self._on_title_edited,
@@ -306,6 +350,7 @@ class MainController(NSObject):
         )
         self._editor.speech_target = self
         self._editor.transcript_target = self
+        self._editor.notes_dir = self._store.notes_dir
         self._editor.set_block_controls_enabled(self._prefs.show_block_controls)
 
         editor_col = flipped_view()
@@ -369,9 +414,7 @@ class MainController(NSObject):
         raw_selection = os.environ.get("STORMPAD_EDITOR_SELECTION", "")
         if raw_selection:
             try:
-                location, length = (
-                    int(part.strip()) for part in raw_selection.split(",", 1)
-                )
+                location, length = (int(part.strip()) for part in raw_selection.split(",", 1))
                 self._editor.restore_selection((location, length))
             except (TypeError, ValueError):
                 pass
@@ -386,9 +429,7 @@ class MainController(NSObject):
             NSTimer.scheduledTimerWithTimeInterval_repeats_block_(
                 0.1,
                 False,
-                lambda timer: self._editor._show_color_menu(
-                    self._editor._plus, color_mode
-                ),
+                lambda timer: self._editor._show_color_menu(self._editor._plus, color_mode),
             )
 
     @objc.python_method
@@ -400,12 +441,82 @@ class MainController(NSObject):
         self._editor.show_block_hover(index)
 
     @objc.python_method
-    def _apply_drag_dev_hook(self) -> None:
-        try:
-            insertion = int(os.environ.get("STORMPAD_DRAG_INSERTION", "0"))
-        except ValueError:
-            insertion = 0
-        self._editor._position_drag_indicator(insertion)
+    def _apply_project_dev_hook(self) -> None:
+        requested = os.environ.get("STORMPAD_SELECT_PROJECT", "")
+        project = next(
+            (
+                item
+                for item in self._projects()
+                if item.id == requested or item.name == requested
+            ),
+            None,
+        )
+        if project is not None:
+            self._on_project(project.id)
+
+    @objc.python_method
+    def _apply_note_dev_hook(self) -> None:
+        requested = os.environ.get("STORMPAD_SELECT_NOTE", "")
+        note = next(
+            (
+                item
+                for item in self._store.list_notes()
+                if item.id == requested or item.title == requested
+            ),
+            None,
+        )
+        if note is not None:
+            self._on_note_selected(note.id)
+
+    @objc.python_method
+    def _show_move_project_dev_menu(self) -> None:
+        note = self._selected_note_or_none()
+        if note is None:
+            return
+        menu = self._move_to_project_item(note).submenu()
+        menu.popUpMenuPositioningItem_atLocation_inView_(
+            None, (0.0, 0.0), self._action_buttons[0]
+        )
+
+    @objc.python_method
+    def _apply_delete_all_dev_hook(self) -> None:
+        self._editor.select_all_note_content()
+        self._editor.clear_note_content()
+
+    @objc.python_method
+    def _capture_dev_windows(self) -> None:
+        """Render only this process's visible AppKit windows for safe fixtures."""
+        from AppKit import NSApplication
+
+        requested = Path(os.environ["STORMPAD_CAPTURE_PATH"])
+        windows = [
+            window
+            for window in NSApplication.sharedApplication().windows()
+            if window.isVisible() and window.contentView() is not None
+        ]
+        for index, window in enumerate(windows):
+            view = window.contentView()
+            bounds = view.bounds()
+            image = view.bitmapImageRepForCachingDisplayInRect_(bounds)
+            if image is None:
+                continue
+            view.cacheDisplayInRect_toBitmapImageRep_(bounds, image)
+            data = image.representationUsingType_properties_(
+                NSBitmapImageFileTypePNG, {}
+            )
+            if data is None:
+                continue
+            path = (
+                requested
+                if len(windows) == 1
+                else requested.with_name(
+                    f"{requested.stem}-{index + 1}{requested.suffix}"
+                )
+            )
+            data.writeToFile_atomically_(str(path), True)
+            print(path, flush=True)
+        if os.environ.get("STORMPAD_CAPTURE_AND_QUIT"):
+            NSApplication.sharedApplication().terminate_(None)
 
     # -- data / filtering ----------------------------------------------------
 
@@ -425,29 +536,84 @@ class MainController(NSObject):
             return []
 
     @objc.python_method
+    def _projects(self) -> list:
+        try:
+            projects = self._store.list_projects()
+        except (OSError, StorageError) as exc:
+            self._alert("Could not load projects", str(exc))
+            return []
+        by_id = {project.id: project for project in projects}
+        ordered = [
+            by_id[project_id]
+            for project_id in self._prefs.project_order
+            if project_id in by_id
+        ]
+        ordered_ids = {project.id for project in ordered}
+        ordered.extend(
+            project for project in projects if project.id not in ordered_ids
+        )
+        current_order = [project.id for project in ordered]
+        if current_order != self._prefs.project_order:
+            self._prefs.project_order = current_order
+        return ordered
+
+    def _validated_project_id(self, projects) -> str | None:
+        if self._project_id in (None, UNFILED_PROJECT_ID):
+            return self._project_id
+        if any(project.id == self._project_id for project in projects):
+            return self._project_id
+        self._project_id = None
+        self._prefs.selected_project_id = None
+        return None
+
+    def _navigation_header(self, projects) -> str:
+        if self._project_id == UNFILED_PROJECT_ID:
+            return UNFILED
+        if self._project_id:
+            project = next(
+                (item for item in projects if item.id == self._project_id),
+                None,
+            )
+            if project is not None:
+                return project.name
+        return self._category
+
+    @objc.python_method
     def _apply_filter(self) -> None:
         all_notes = self._all_notes()
-        self._update_counts(all_notes)
+        projects = self._projects()
+        self._project_id = self._validated_project_id(projects)
+        counts = self._update_counts(all_notes, projects)
 
         if self._query:
             results = search_notes(
                 all_notes,
                 self._query,
                 category=None if self._category == ALL_NOTES else self._category,
+                project_id=self._project_id,
             )
             displayed = [r.note for r in results]
             header = "Results"
             n = len(displayed)
             subtitle = f'{n} note{"s" if n != 1 else ""} matching "{self._query}"'
         else:
-            displayed = filter_by_category(all_notes, self._category)
-            header = self._category
+            displayed = filter_by_project(
+                filter_by_category(all_notes, self._category),
+                self._project_id,
+            )
+            header = self._navigation_header(projects)
             n = len(displayed)
-            subtitle = f'{n} note{"s" if n != 1 else ""}'
+            subtitle = f"{n} note{'s' if n != 1 else ''}"
 
         self._displayed = displayed
         self._note_list.set_notes(displayed, header=header, subtitle=subtitle)
-        self._sidebar.set_active_category(self._category)
+        self._sidebar.set_navigation(
+            projects,
+            counts,
+            category=self._category,
+            project_id=self._project_id,
+            collapsed=self._prefs.projects_collapsed,
+        )
 
         selected = choose_selected_note(displayed, self._current_id)
         if selected is not None:
@@ -476,11 +642,20 @@ class MainController(NSObject):
             button.setAlphaValue_(1.0 if enabled else 0.4)
 
     @objc.python_method
-    def _update_counts(self, all_notes: list) -> None:
-        counts = {ALL_NOTES: len(all_notes)}
+    def _update_counts(self, all_notes: list, projects: list) -> dict[str, int]:
+        counts = {
+            ALL_NOTES: len(all_notes),
+            UNFILED_PROJECT_ID: sum(
+                1 for note in all_notes if note.project_id is None
+            ),
+        }
         for category in CATEGORIES:
             counts[category] = sum(1 for n in all_notes if n.category == category)
-        self._sidebar.set_counts(counts)
+        for project in projects:
+            counts[project.id] = sum(
+                1 for note in all_notes if note.project_id == project.id
+            )
+        return counts
 
     @objc.python_method
     def _displayed_by_id(self, note_id: str):
@@ -492,8 +667,19 @@ class MainController(NSObject):
     def _on_category(self, category: str) -> None:
         self._autosave.flush()
         self._category = category
+        self._project_id = None
+        self._prefs.selected_project_id = None
         if category == ALL_NOTES or category in CATEGORIES:
             self._prefs.last_category = category
+        self._apply_filter()
+
+    @objc.python_method
+    def _on_project(self, project_id: str | None) -> None:
+        self._autosave.flush()
+        self._project_id = project_id
+        self._category = ALL_NOTES
+        self._prefs.last_category = ALL_NOTES
+        self._prefs.selected_project_id = project_id
         self._apply_filter()
 
     @objc.python_method
@@ -511,6 +697,7 @@ class MainController(NSObject):
                 return
         self._current_id = note_id
         self._prefs.last_note_id = note_id
+        self._note_list.select_note_id(note_id, notify=False)
         self._editor.load_note(note)
         self._autosave.reset()
         self._empty.hide()
@@ -556,7 +743,11 @@ class MainController(NSObject):
         self._editor.set_status(SaveStatus.SAVED)
         self._note_list.set_notes(
             self._displayed,
-            header="Results" if self._query else self._category,
+            header=(
+                "Results"
+                if self._query
+                else self._navigation_header(self._projects())
+            ),
             subtitle=self._note_list_subtitle(),
         )
         self._note_list.select_note_id(save_id, notify=False)
@@ -566,7 +757,7 @@ class MainController(NSObject):
         n = len(self._displayed)
         if self._query:
             return f'{n} note{"s" if n != 1 else ""} matching "{self._query}"'
-        return f'{n} note{"s" if n != 1 else ""}'
+        return f"{n} note{'s' if n != 1 else ''}"
 
     # -- actions -------------------------------------------------------------
 
@@ -574,9 +765,18 @@ class MainController(NSObject):
     def newNote_(self, sender):  # noqa: N802
         self._autosave.flush()
         category = default_new_category(self._category)
+        project_id = (
+            self._project_id
+            if self._project_id not in (None, UNFILED_PROJECT_ID)
+            else None
+        )
         try:
-            note = self._store.create_note("Untitled Note", category)
-        except StorageError as exc:
+            note = self._store.create_note(
+                "Untitled Note",
+                category,
+                project_id=project_id,
+            )
+        except (ProjectNotFoundError, StorageError) as exc:
             self._alert("Could not create note", str(exc))
             return
         self._current_id = note.id
@@ -585,6 +785,156 @@ class MainController(NSObject):
         self._sidebar.clear_search()
         self._apply_filter()
         self._editor.focus_title()
+
+    def _represented_string(self, sender) -> str | None:
+        if sender is None or not hasattr(sender, "representedObject"):
+            return None
+        value = sender.representedObject()
+        return str(value) if value is not None else None
+
+    @objc.IBAction
+    def createProject_(self, sender):  # noqa: N802
+        alert = NSAlert.alloc().init()
+        alert.setMessageText_("Create Project")
+        alert.setInformativeText_(
+            "Projects group related notes in a real local folder."
+        )
+        field = NSTextField.alloc().initWithFrame_(NSMakeRect(0, 0, 340, 24))
+        field.setPlaceholderString_("Project name")
+        field.setAccessibilityLabel_("Project name")
+        alert.setAccessoryView_(field)
+        alert.addButtonWithTitle_("Create")
+        alert.addButtonWithTitle_("Cancel")
+        if alert.runModal() != 1000:
+            return
+        try:
+            project = self._store.create_project(str(field.stringValue()))
+        except (InvalidProjectError, StorageError) as exc:
+            self._alert("Could not create project", str(exc))
+            return
+        order = self._prefs.project_order
+        self._prefs.project_order = [*order, project.id]
+        self._project_id = project.id
+        self._category = ALL_NOTES
+        self._prefs.selected_project_id = project.id
+        self._prefs.last_category = ALL_NOTES
+        self._apply_filter()
+
+    @objc.IBAction
+    def toggleProjectsSection_(self, sender):  # noqa: N802
+        self._prefs.projects_collapsed = not self._prefs.projects_collapsed
+        self._apply_filter()
+
+    @objc.IBAction
+    def newNoteInProject_(self, sender):  # noqa: N802
+        project_id = self._represented_string(sender)
+        if project_id is None:
+            return
+        self._on_project(project_id)
+        self.newNote_(sender)
+
+    @objc.IBAction
+    def renameProject_(self, sender):  # noqa: N802
+        project_id = self._represented_string(sender)
+        if project_id is None:
+            return
+        try:
+            project = self._store.load_project(project_id)
+        except ProjectNotFoundError as exc:
+            self._alert("Project not found", str(exc))
+            self._apply_filter()
+            return
+        alert = NSAlert.alloc().init()
+        alert.setMessageText_("Rename Project")
+        alert.setInformativeText_(
+            "The project folder will be renamed safely; note IDs and attachments stay unchanged."
+        )
+        field = NSTextField.alloc().initWithFrame_(NSMakeRect(0, 0, 340, 24))
+        field.setStringValue_(project.name)
+        field.setAccessibilityLabel_("Project name")
+        alert.setAccessoryView_(field)
+        alert.addButtonWithTitle_("Rename")
+        alert.addButtonWithTitle_("Cancel")
+        if alert.runModal() != 1000:
+            return
+        self._autosave.flush()
+        try:
+            self._store.rename_project(project.id, str(field.stringValue()))
+        except (InvalidProjectError, StorageError, OSError) as exc:
+            self._alert("Could not rename project", str(exc))
+            return
+        self._apply_filter()
+
+    @objc.IBAction
+    def revealProject_(self, sender):  # noqa: N802
+        project_id = self._represented_string(sender)
+        if project_id is None:
+            return
+        try:
+            project = self._store.load_project(project_id)
+        except ProjectNotFoundError as exc:
+            self._alert("Project not found", str(exc))
+            self._apply_filter()
+            return
+        NSWorkspace.sharedWorkspace().activateFileViewerSelectingURLs_(
+            [NSURL.fileURLWithPath_(str(project.path))]
+        )
+
+    @objc.IBAction
+    def deleteProject_(self, sender):  # noqa: N802
+        project_id = self._represented_string(sender)
+        if project_id is None:
+            return
+        self._autosave.flush()
+        try:
+            project = self._store.load_project(project_id)
+            note_count = sum(
+                1
+                for note in self._store.list_notes()
+                if note.project_id == project.id
+            )
+        except (ProjectNotFoundError, StorageError) as exc:
+            self._alert("Project not found", str(exc))
+            self._apply_filter()
+            return
+        alert = NSAlert.alloc().init()
+        alert.setMessageText_(f"Delete “{project.name}”?")
+        if note_count:
+            alert.setInformativeText_(
+                f"{note_count} note{'s' if note_count != 1 else ''} will be moved to Unfiled. "
+                "No note or attachment will be deleted."
+            )
+            alert.addButtonWithTitle_("Cancel")
+            action = alert.addButtonWithTitle_(
+                "Move Notes to Unfiled and Delete Project"
+            )
+        else:
+            alert.setInformativeText_(
+                "The empty project folder will be moved to Trash."
+            )
+            alert.addButtonWithTitle_("Cancel")
+            action = alert.addButtonWithTitle_("Delete Project")
+        if hasattr(action, "setHasDestructiveAction_"):
+            action.setHasDestructiveAction_(True)
+        if alert.runModal() != NSAlertSecondButtonReturn:
+            return
+        try:
+            self._store.delete_project(
+                project.id,
+                move_notes_to_unfiled=bool(note_count),
+            )
+        except (StorageError, OSError) as exc:
+            self._alert("Could not delete project", str(exc))
+            return
+        self._prefs.project_order = [
+            value
+            for value in self._prefs.project_order
+            if value != project.id
+        ]
+        if self._project_id == project.id:
+            self._project_id = UNFILED_PROJECT_ID if note_count else None
+            self._prefs.selected_project_id = self._project_id
+        self._apply_filter()
 
     @objc.IBAction
     def saveNote_(self, sender):  # noqa: N802
@@ -624,7 +974,11 @@ class MainController(NSObject):
         self._autosave.reset()
         self._note_list.set_notes(
             self._displayed,
-            header="Results" if self._query else self._category,
+            header=(
+                "Results"
+                if self._query
+                else self._navigation_header(self._projects())
+            ),
             subtitle=self._note_list_subtitle(),
         )
         self._note_list.select_note_id(note.id, notify=False)
@@ -647,9 +1001,7 @@ class MainController(NSObject):
         width = 46.0 if collapsed else _LIST_WIDTH
         self._list_item.setMinimumThickness_(width if collapsed else 260.0)
         self._list_item.setMaximumThickness_(width if collapsed else 440.0)
-        self._split_vc.splitView().setPosition_ofDividerAtIndex_(
-            _SIDEBAR_WIDTH + width, 1
-        )
+        self._split_vc.splitView().setPosition_ofDividerAtIndex_(_SIDEBAR_WIDTH + width, 1)
 
     @objc.python_method
     def _notes_panel_collapsed(self) -> bool:
@@ -675,9 +1027,7 @@ class MainController(NSObject):
                 return None
             selected = Path(str(panel.URL().path()))
         try:
-            managed = attachments.import_attachment(
-                selected, self._store.notes_dir, note.id
-            )
+            managed = attachments.import_attachment(selected, self._store.notes_dir, note.id)
         except StorageError as exc:
             self._alert("Could not import attachment", str(exc))
             return None
@@ -695,6 +1045,76 @@ class MainController(NSObject):
             runs=[InlineRun(managed.name)],
             target=relative,
         )
+
+    @objc.python_method
+    def _move_to_project_item(self, note):
+        parent = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+            "Move to Project", None, ""
+        )
+        submenu = NSMenu.alloc().initWithTitle_("Move to Project")
+        projects = self._projects()
+        if not projects:
+            empty = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+                "No Projects", None, ""
+            )
+            empty.setEnabled_(False)
+            submenu.addItem_(empty)
+        for project in projects:
+            item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+                project.name, "moveNoteToProject:", ""
+            )
+            item.setTarget_(self)
+            item.setRepresentedObject_(f"{note.id}|{project.id}")
+            item.setState_(1 if note.project_id == project.id else 0)
+            submenu.addItem_(item)
+        parent.setSubmenu_(submenu)
+        return parent
+
+    @objc.python_method
+    def _note_context_menu(self, note):
+        menu = NSMenu.alloc().initWithTitle_("Note")
+        menu.addItem_(self._move_to_project_item(note))
+        if note.project_id is not None:
+            remove = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+                "Remove from Project", "removeNoteFromProject:", ""
+            )
+            remove.setTarget_(self)
+            remove.setRepresentedObject_(note.id)
+            menu.addItem_(remove)
+        return menu
+
+    @objc.IBAction
+    def moveNoteToProject_(self, sender):  # noqa: N802
+        payload = self._represented_string(sender)
+        if payload is None or "|" not in payload:
+            return
+        note_id, project_id = payload.split("|", 1)
+        self._autosave.flush()
+        try:
+            moved = self._store.move_note_to_project(note_id, project_id)
+        except (NoteNotFoundError, ProjectNotFoundError, StorageError, OSError) as exc:
+            self._alert("Could not move note", str(exc))
+            self._apply_filter()
+            return
+        self._current_id = moved.id
+        self._prefs.last_note_id = moved.id
+        self._apply_filter()
+
+    @objc.IBAction
+    def removeNoteFromProject_(self, sender):  # noqa: N802
+        note_id = self._represented_string(sender) or self._current_id
+        if note_id is None:
+            return
+        self._autosave.flush()
+        try:
+            moved = self._store.remove_note_from_project(note_id)
+        except (NoteNotFoundError, StorageError, OSError) as exc:
+            self._alert("Could not remove note from project", str(exc))
+            self._apply_filter()
+            return
+        self._current_id = moved.id
+        self._prefs.last_note_id = moved.id
+        self._apply_filter()
 
     @objc.IBAction
     def showNoteInfo_(self, sender):  # noqa: N802
@@ -717,7 +1137,27 @@ class MainController(NSObject):
         info(f"Created: {note.created_at.isoformat(sep=' ', timespec='seconds')}")
         info(f"Updated: {note.updated_at.isoformat(sep=' ', timespec='seconds')}")
         info(f"Category: {note.category}")
+        project = next(
+            (
+                project
+                for project in self._projects()
+                if project.id == note.project_id
+            ),
+            None,
+        )
+        info(f"Project: {project.name if project is not None else UNFILED}")
         info(f"Words: {word_count(note_to_plain_text(note))}")
+        menu.addItem_(NSMenuItem.separatorItem())
+        menu.addItem_(self._move_to_project_item(note))
+        if note.project_id is not None:
+            remove_project = (
+                NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+                    "Remove from Project", "removeNoteFromProject:", ""
+                )
+            )
+            remove_project.setTarget_(self)
+            remove_project.setRepresentedObject_(note.id)
+            menu.addItem_(remove_project)
         menu.addItem_(NSMenuItem.separatorItem())
         for title, action in (
             ("Rename Filename…", "renameFilename:"),
@@ -736,12 +1176,18 @@ class MainController(NSObject):
         delete.setTarget_(self)
         menu.addItem_(delete)
         self._note_info_menu = menu
-        menu.popUpMenuPositioningItem_atLocation_inView_(
-            None, (0.0, 0.0), sender
-        )
+        menu.popUpMenuPositioningItem_atLocation_inView_(None, (0.0, 0.0), sender)
 
     @objc.python_method
     def _show_note_info_alert(self, note) -> None:
+        project = next(
+            (
+                project
+                for project in self._projects()
+                if project.id == note.project_id
+            ),
+            None,
+        )
         alert = NSAlert.alloc().init()
         alert.setMessageText_(note.title or "Untitled Note")
         alert.setInformativeText_(
@@ -750,6 +1196,7 @@ class MainController(NSObject):
             f"Created: {note.created_at.isoformat(sep=' ', timespec='seconds')}\n"
             f"Updated: {note.updated_at.isoformat(sep=' ', timespec='seconds')}\n"
             f"Category: {note.category}\n"
+            f"Project: {project.name if project is not None else UNFILED}\n"
             f"Words: {word_count(note_to_plain_text(note))}\n"
             f"Stable ID: {note.id}"
         )
@@ -776,9 +1223,7 @@ class MainController(NSObject):
         if alert.runModal() != 1000:
             return
         try:
-            renamed = self._store.rename_filename(
-                note.id, str(field.stringValue())
-            )
+            renamed = self._store.rename_filename(note.id, str(field.stringValue()))
         except StorageError as exc:
             self._alert("Could not rename filename", str(exc))
             return
@@ -786,7 +1231,11 @@ class MainController(NSObject):
         self._editor.load_note(renamed)
         self._note_list.set_notes(
             self._displayed,
-            header="Results" if self._query else self._category,
+            header=(
+                "Results"
+                if self._query
+                else self._navigation_header(self._projects())
+            ),
             subtitle=self._note_list_subtitle(),
         )
         self._note_list.select_note_id(renamed.id, notify=False)
@@ -837,13 +1286,16 @@ class MainController(NSObject):
     def insertBlockType_(self, sender):  # noqa: N802
         if self._current_id is None:
             return
-        self._editor._command_block_index = self._editor._current_block_index()
-        self._editor._command_option_pressed = False
+        self._editor.prepare_block_command(option_pressed=False)
         self._editor.chooseBlockType_(sender)
 
     @objc.python_method
     def color_swatch_image(self, token: str, mode: str):
         return self._editor._color_swatch_image(token, mode)
+
+    @objc.python_method
+    def color_menu_title(self, token: str, mode: str) -> str:
+        return self._editor.color_menu_title(token, mode)
 
     @objc.IBAction
     def openFile_(self, sender):  # noqa: N802
@@ -980,8 +1432,9 @@ class MainController(NSObject):
     def showHelp_(self, sender):  # noqa: N802
         self._alert(
             "StormPad Help",
-            "Hover a block row to reveal Add and Drag controls. "
+            "Hover a block row to reveal the Add Block control. "
             "Use the Format menu for block types and colors. "
+            "Projects group related notes in local folders. "
             "Notes autosave as local Markdown files.",
         )
 
@@ -1018,9 +1471,7 @@ class MainController(NSObject):
             return bool(self._editor.selected_body_text())
         if name == "insertBlockType:":
             item.setState_(
-                1
-                if str(item.representedObject()) == self._editor.current_block_type()
-                else 0
+                1 if str(item.representedObject()) == self._editor.current_block_type() else 0
             )
             return self._current_id is not None
         if name == "selectTheme:":
@@ -1030,9 +1481,7 @@ class MainController(NSObject):
             item.setState_(1 if self._prefs.show_block_controls else 0)
             return True
         if name == "toggleNotesPanel:":
-            item.setTitle_(
-                "Expand Notes" if self._notes_panel_collapsed() else "Collapse Notes"
-            )
+            item.setTitle_("Expand Notes" if self._notes_panel_collapsed() else "Collapse Notes")
             return True
         return True
 

@@ -26,6 +26,7 @@ File layout::
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import tempfile
@@ -39,6 +40,7 @@ from .models import (
     CATEGORIES,
     DEFAULT_CATEGORY,
     Note,
+    Project,
     TranscriptBlock,
     now_local,
 )
@@ -53,6 +55,9 @@ _TS_LINE_RE = re.compile(r"^\[(\d{1,2}:\d{2}:\d{2})\]\s*$")
 _NOTES_HEADER = "## Notes"
 _TRANSCRIPT_HEADER = "## Transcript"
 _KNOWN_METADATA = {"Created", "Updated", "Category", "ID", "Transcript-Block"}
+PROJECTS_DIRNAME = "Projects"
+PROJECT_METADATA_FILENAME = ".stormpad-project.json"
+_KNOWN_METADATA.add("Project-ID")
 
 
 # --- Filenames ----------------------------------------------------------------
@@ -89,6 +94,12 @@ def build_manual_filename(requested: str) -> str:
     return build_filename(stem)
 
 
+def project_slug(name: str) -> str:
+    """Return a safe project-folder slug with a project-specific fallback."""
+    value = slugify(name)
+    return "untitled-project" if value == "untitled-note" else value
+
+
 def unique_path(notes_dir: Path, filename: str, *, excluding: Path | None = None) -> Path:
     """Return a non-colliding path in ``notes_dir`` for ``filename``.
 
@@ -118,6 +129,8 @@ def serialize(note: Note) -> str:
         f"Category: {note.category}",
         f"ID: {note.id}",
     ]
+    if note.project_id:
+        metadata_lines.append(f"Project-ID: {note.project_id}")
     if note.transcript_visible or note.transcript:
         state = (
             "hidden"
@@ -126,9 +139,7 @@ def serialize(note: Note) -> str:
         )
         metadata_lines.append(f"Transcript-Block: {state}")
     metadata_lines.extend(
-        f"{key}: {value}"
-        for key, value in note.metadata.items()
-        if key not in _KNOWN_METADATA
+        f"{key}: {value}" for key, value in note.metadata.items() if key not in _KNOWN_METADATA
     )
     parts: list[str] = [
         f"# {note.title or DEFAULT_TITLE}",
@@ -215,6 +226,7 @@ def parse(
     transcript_visible = False
     transcript_collapsed = False
     transcript_hidden = False
+    project_id: str | None = None
 
     # Locate section headers.
     notes_idx: int | None = None
@@ -252,6 +264,8 @@ def parse(
             transcript_visible = value.lower() in ("expanded", "collapsed")
             transcript_collapsed = value.lower() == "collapsed"
             transcript_hidden = value.lower() == "hidden"
+        elif key == "Project-ID":
+            project_id = _valid_stored_id(value)
         else:
             unknown_metadata[key] = value
 
@@ -265,9 +279,7 @@ def parse(
     transcript: list[TranscriptBlock] = []
     if transcript_idx is not None:
         transcript = _parse_transcript(lines[transcript_idx + 1 :])
-        transcript_visible = transcript_visible or (
-            bool(transcript) and not transcript_hidden
-        )
+        transcript_visible = transcript_visible or (bool(transcript) and not transcript_hidden)
 
     legacy_id = note_id or path.stem
     stable_id = stored_id or _legacy_uuid(path)
@@ -286,6 +298,7 @@ def parse(
         transcript_collapsed=transcript_collapsed,
         id_persisted=stored_id is not None,
         legacy_id=None if stored_id else legacy_id,
+        project_id=project_id,
     )
     if transcript_hidden:
         note.transcript_visible = False
@@ -384,15 +397,101 @@ def commit_manual_filename(note: Note, requested: str) -> Path:
     return target
 
 
+# --- Projects -----------------------------------------------------------------
+
+
+def projects_dir(notes_dir: Path | str) -> Path:
+    return Path(notes_dir) / PROJECTS_DIRNAME
+
+
+def unique_project_path(notes_dir: Path | str, name: str, *, excluding: Path | None = None) -> Path:
+    root = projects_dir(notes_dir)
+    slug = project_slug(name)
+    candidate = root / slug
+    if candidate == excluding or not candidate.exists():
+        return candidate
+    index = 2
+    while (root / f"{slug}-{index}").exists() and (root / f"{slug}-{index}") != excluding:
+        index += 1
+    return root / f"{slug}-{index}"
+
+
+def project_metadata(project: Project) -> str:
+    """Serialize stable project metadata as deterministic UTF-8 JSON."""
+    return (
+        json.dumps(
+            {
+                "id": project.id,
+                "name": project.name,
+                "created_at": project.created_at.isoformat(),
+                "updated_at": project.updated_at.isoformat(),
+            },
+            ensure_ascii=False,
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n"
+    )
+
+
+def write_project(project: Project) -> None:
+    project.path.mkdir(parents=True, exist_ok=True)
+    atomic_write_text(project.path / PROJECT_METADATA_FILENAME, project_metadata(project))
+
+
+def read_project(path: Path) -> Project | None:
+    """Read valid project metadata; malformed/unknown folders stay non-fatal."""
+    metadata_path = path / PROJECT_METADATA_FILENAME
+    try:
+        payload = json.loads(metadata_path.read_text(encoding="utf-8"))
+        project_id = str(uuid.UUID(str(payload["id"])))
+        name = str(payload["name"]).strip()
+        created = datetime.fromisoformat(str(payload["created_at"]))
+        updated = datetime.fromisoformat(str(payload["updated_at"]))
+    except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError):
+        return None
+    if not name:
+        return None
+    return Project(
+        id=project_id,
+        path=path,
+        name=name,
+        created_at=created,
+        updated_at=updated,
+    )
+
+
+def list_projects(notes_dir: Path | str) -> list[Project]:
+    root = projects_dir(notes_dir)
+    if not root.exists():
+        return []
+    projects = [
+        project
+        for path in sorted(root.iterdir())
+        if path.is_dir() and (project := read_project(path)) is not None
+    ]
+    projects.sort(key=lambda project: (project.created_at, project.name.casefold()))
+    return projects
+
+
 def list_note_paths(notes_dir: Path) -> list[Path]:
-    """Return the Markdown note files in ``notes_dir`` (skipping temp files)."""
+    """Return root and project Markdown notes, skipping hidden/temp metadata."""
     if not notes_dir.exists():
         return []
-    return sorted(
-        p
-        for p in notes_dir.glob("*.md")
-        if p.is_file() and not p.name.startswith(".")
+    root_notes = [
+        path for path in notes_dir.glob("*.md") if path.is_file() and not path.name.startswith(".")
+    ]
+    project_root = projects_dir(notes_dir)
+    project_notes = (
+        [
+            path
+            for path in project_root.rglob("*.md")
+            if path.is_file() and not path.name.startswith(".")
+        ]
+        if project_root.exists()
+        else []
     )
+    return sorted([*root_notes, *project_notes], key=lambda path: str(path))
 
 
 def _mtime_or_now(path: Path) -> datetime:

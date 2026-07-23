@@ -48,6 +48,19 @@ COLOR_TOKENS: tuple[str, ...] = (
     "purple",
 )
 
+PARAGRAPH_BLOCK_TYPES: frozenset[BlockType] = frozenset(
+    {
+        BlockType.TEXT,
+        BlockType.HEADING_1,
+        BlockType.HEADING_2,
+        BlockType.HEADING_3,
+        BlockType.TODO,
+        BlockType.BULLET,
+        BlockType.NUMBERED,
+        BlockType.QUOTE,
+    }
+)
+
 
 @dataclass(frozen=True, order=True)
 class InlineMark:
@@ -89,9 +102,7 @@ def coalesce_runs(runs: list[InlineRun]) -> list[InlineRun]:
     return result
 
 
-def split_runs(
-    runs: list[InlineRun], offset: int
-) -> tuple[list[InlineRun], list[InlineRun]]:
+def split_runs(runs: list[InlineRun], offset: int) -> tuple[list[InlineRun], list[InlineRun]]:
     """Split inline runs at a plain-text offset while retaining all marks."""
     offset = max(0, offset)
     before: list[InlineRun] = []
@@ -109,6 +120,19 @@ def split_runs(
             after.append(InlineRun(run.text[cut:], run.marks))
         consumed = run_end
     return coalesce_runs(before), coalesce_runs(after)
+
+
+def remove_inline_mark(runs: list[InlineRun], kind: MarkType) -> list[InlineRun]:
+    """Remove one semantic mark from every run without changing visible text."""
+    return coalesce_runs(
+        [
+            InlineRun(
+                run.text,
+                tuple(mark for mark in run.marks if mark.kind != kind),
+            )
+            for run in runs
+        ]
+    )
 
 
 @dataclass
@@ -174,14 +198,27 @@ def convert_block(block: Block, kind: BlockType) -> Block:
         runs=list(block.runs),
         checked=block.checked if kind == BlockType.TODO else False,
         indent=(
-            block.indent
-            if kind in (BlockType.TODO, BlockType.BULLET, BlockType.NUMBERED)
-            else 0
+            block.indent if kind in (BlockType.TODO, BlockType.BULLET, BlockType.NUMBERED) else 0
         ),
         target=block.target if kind in (BlockType.LINK, BlockType.IMAGE, BlockType.FILE) else None,
         alt=block.alt if kind == BlockType.IMAGE else None,
         collapsed=block.collapsed if kind == BlockType.TRANSCRIPT else False,
     )
+
+
+def convert_selected_blocks(
+    blocks: list[Block], indices: list[int], kind: BlockType
+) -> list[Block]:
+    """Convert compatible selected paragraphs while retaining order/content."""
+    if kind not in PARAGRAPH_BLOCK_TYPES:
+        raise ValueError(f"{kind.value} is not a paragraph block type")
+    selected = set(indices)
+    return [
+        convert_block(block, kind)
+        if index in selected and block.kind in PARAGRAPH_BLOCK_TYPES
+        else block
+        for index, block in enumerate(blocks)
+    ]
 
 
 def move_block(blocks: list[Block], index: int, offset: int) -> tuple[list[Block], int]:

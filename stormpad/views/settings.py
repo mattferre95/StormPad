@@ -124,7 +124,7 @@ class SettingsController(NSObject):
         controls.setButtonType_(NSSwitchButton)
         controls.setAttributedTitle_(
             NSAttributedString.alloc().initWithString_attributes_(
-                "Show block controls on hover",
+                "Show Add Block on hover",
                 {
                     NSFontAttributeName: NSFont.systemFontOfSize_(13),
                     NSForegroundColorAttributeName: palette.text_primary,
@@ -135,7 +135,7 @@ class SettingsController(NSObject):
         controls.setTarget_(self)
         controls.setAction_("toggleBlockControls:")
         controls.setContentTintColor_(palette.accent)
-        controls.setAccessibilityLabel_("Show block controls on hover")
+        controls.setAccessibilityLabel_("Show Add Block on hover")
         content.addSubview_(controls)
         self._controls_checkbox = controls
 

@@ -15,10 +15,12 @@ from stormpad.blocks import (
     apply_block_command,
     backspace_empty_result,
     convert_block,
+    convert_selected_blocks,
     empty_return_result,
     insert_block,
     move_block,
     next_block_after_return,
+    remove_inline_mark,
     reorder_blocks,
     split_runs,
     toggle_todo,
@@ -103,17 +105,11 @@ def test_block_command_converts_empty_text_for_every_required_type(kind):
     requested = Block(
         kind=kind,
         runs=(
-            [InlineRun("payload")]
-            if kind not in (BlockType.DIVIDER, BlockType.TRANSCRIPT)
-            else []
+            [InlineRun("payload")] if kind not in (BlockType.DIVIDER, BlockType.TRANSCRIPT) else []
         ),
         checked=kind == BlockType.TODO,
         indent=2,
-        target=(
-            "target"
-            if kind in (BlockType.LINK, BlockType.IMAGE, BlockType.FILE)
-            else None
-        ),
+        target=("target" if kind in (BlockType.LINK, BlockType.IMAGE, BlockType.FILE) else None),
         alt="alt" if kind == BlockType.IMAGE else None,
         collapsed=kind == BlockType.TRANSCRIPT,
     )
@@ -128,9 +124,7 @@ def test_block_command_converts_empty_text_for_every_required_type(kind):
 
 def test_block_command_inserts_at_explicit_hovered_index():
     blocks = [Block.text_block("A"), Block.text_block("B"), Block.text_block("C")]
-    below, destination = apply_block_command(
-        blocks, 1, Block.text_block("X", BlockType.HEADING_2)
-    )
+    below, destination = apply_block_command(blocks, 1, Block.text_block("X", BlockType.HEADING_2))
     assert destination == 2
     assert [block.text for block in below] == ["A", "B", "X", "C"]
     above, destination = apply_block_command(
@@ -141,6 +135,91 @@ def test_block_command_inserts_at_explicit_hovered_index():
     )
     assert destination == 1
     assert [block.text for block in above] == ["A", "X", "B", "C"]
+
+
+@pytest.mark.parametrize(
+    "kind",
+    [
+        BlockType.HEADING_1,
+        BlockType.HEADING_2,
+        BlockType.HEADING_3,
+        BlockType.TODO,
+        BlockType.BULLET,
+        BlockType.NUMBERED,
+        BlockType.QUOTE,
+        BlockType.TEXT,
+    ],
+)
+def test_selected_paragraph_conversion_preserves_content_and_marks(kind):
+    marks = (InlineMark(MarkType.BOLD), InlineMark(MarkType.TEXT_COLOR, "blue"))
+    source = Block(kind=BlockType.HEADING_2, runs=[InlineRun("Exact text", marks)])
+    result = convert_selected_blocks([source], [0], kind)
+    assert result[0].kind == kind
+    assert result[0].text == "Exact text"
+    assert result[0].runs == source.runs
+    assert len(result) == 1
+
+
+def test_selection_spanning_multiple_blocks_converts_once_in_order():
+    blocks = [
+        Block.text_block("Alpha"),
+        Block.text_block("Beta", BlockType.HEADING_3),
+        Block(kind=BlockType.DIVIDER),
+        Block.text_block("Gamma"),
+    ]
+    result = convert_selected_blocks(blocks, [0, 1, 2], BlockType.QUOTE)
+    assert [(block.kind, block.text) for block in result] == [
+        (BlockType.QUOTE, "Alpha"),
+        (BlockType.QUOTE, "Beta"),
+        (BlockType.DIVIDER, ""),
+        (BlockType.TEXT, "Gamma"),
+    ]
+
+
+def test_selected_conversion_survives_markdown_round_trip_without_duplicates():
+    source = [
+        Block.text_block("Alpha"),
+        Block(
+            kind=BlockType.TEXT,
+            runs=[
+                InlineRun(
+                    "Beta",
+                    (InlineMark(MarkType.BOLD),),
+                )
+            ],
+        ),
+    ]
+    converted = convert_selected_blocks(
+        source,
+        [0, 1],
+        BlockType.HEADING_2,
+    )
+    reloaded = parse_blocks(serialize_blocks(converted))
+    assert [(block.kind, block.text) for block in reloaded] == [
+        (BlockType.HEADING_2, "Alpha"),
+        (BlockType.HEADING_2, "Beta"),
+    ]
+    assert reloaded[1].runs == converted[1].runs
+
+
+def test_clear_text_color_and_highlight_leave_no_empty_spans():
+    runs = [
+        InlineRun(
+            "mixed",
+            (
+                InlineMark(MarkType.BOLD),
+                InlineMark(MarkType.TEXT_COLOR, "purple"),
+                InlineMark(MarkType.HIGHLIGHT, "yellow"),
+            ),
+        )
+    ]
+    no_color = remove_inline_mark(runs, MarkType.TEXT_COLOR)
+    cleared = remove_inline_mark(no_color, MarkType.HIGHLIGHT)
+    assert cleared == [InlineRun("mixed", (InlineMark(MarkType.BOLD),))]
+    markdown = serialize_inline(cleared)
+    assert "data-stormpad-color" not in markdown
+    assert "data-stormpad-highlight" not in markdown
+    assert "<span" not in markdown
 
 
 def test_drag_reorder_preserves_complete_payload():

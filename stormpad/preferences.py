@@ -12,6 +12,7 @@ mistakes surface early.
 
 from __future__ import annotations
 
+import json
 from typing import Protocol
 
 from .errors import InvalidCategoryError, InvalidThemeError
@@ -30,6 +31,9 @@ _KEY_LAST_NOTE = "last_note_id"
 _KEY_LAST_CATEGORY = "last_category"
 _KEY_NOTES_COLLAPSED = "notes_list_collapsed"
 _KEY_SHOW_BLOCK_CONTROLS = "show_block_controls"
+_KEY_SELECTED_PROJECT = "selected_project_id"
+_KEY_PROJECTS_COLLAPSED = "projects_collapsed"
+_KEY_PROJECT_ORDER = "project_order"
 
 
 class PreferencesBackend(Protocol):
@@ -122,9 +126,52 @@ class Preferences:
 
     @property
     def show_block_controls(self) -> bool:
-        """Whether hover-only add/drag gutter controls are enabled."""
+        """Whether the hover-only Add Block gutter control is enabled."""
         return self._backend.get(_KEY_SHOW_BLOCK_CONTROLS) != "false"
 
     @show_block_controls.setter
     def show_block_controls(self, value: bool) -> None:
         self._backend.set(_KEY_SHOW_BLOCK_CONTROLS, "true" if value else "false")
+
+    # -- Projects ----------------------------------------------------------
+
+    @property
+    def selected_project_id(self) -> str | None:
+        return self._backend.get(_KEY_SELECTED_PROJECT) or None
+
+    @selected_project_id.setter
+    def selected_project_id(self, value: str | None) -> None:
+        if value:
+            self._backend.set(_KEY_SELECTED_PROJECT, value)
+        else:
+            self._backend.delete(_KEY_SELECTED_PROJECT)
+
+    @property
+    def projects_collapsed(self) -> bool:
+        return self._backend.get(_KEY_PROJECTS_COLLAPSED) == "true"
+
+    @projects_collapsed.setter
+    def projects_collapsed(self, value: bool) -> None:
+        self._backend.set(_KEY_PROJECTS_COLLAPSED, "true" if value else "false")
+
+    @property
+    def project_order(self) -> list[str]:
+        raw = self._backend.get(_KEY_PROJECT_ORDER)
+        if not raw:
+            return []
+        try:
+            values = json.loads(raw)
+        except (TypeError, json.JSONDecodeError):
+            return []
+        if not isinstance(values, list):
+            return []
+        result: list[str] = []
+        for value in values:
+            if isinstance(value, str) and value and value not in result:
+                result.append(value)
+        return result
+
+    @project_order.setter
+    def project_order(self, values: list[str]) -> None:
+        unique = list(dict.fromkeys(value for value in values if value))
+        self._backend.set(_KEY_PROJECT_ORDER, json.dumps(unique))
