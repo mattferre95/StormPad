@@ -15,8 +15,9 @@ writing canvas. Notes stay as human-readable Markdown on your Mac; attachments
 are copied into local managed folders. There are no accounts, cloud sync,
 telemetry, external AI services, or web views.
 
-> **Status:** Phase 5.1.3 native sharing and sidebar dragging are implemented on
-> `feature/notion-editor` and ready for hands-on review. Phase 6 packaging has
+> **Status:** Phase 5.1.4 critical editor, navigation, dragging, and lifecycle
+> repairs are implemented locally on `feature/notion-editor` and ready for
+> hands-on review. Phase 6 packaging has
 > not started: there is no final `.app`, `.icns`, `.dmg`, signing,
 > notarization, release, or landing page yet.
 
@@ -156,7 +157,7 @@ hover-control preference persist.
 
 ## Screenshots
 
-Sanitized Phase 5.1.3 fixtures and reproducible capture commands are documented
+Sanitized Phase 5.1.3 and 5.1.4 fixtures and reproducible capture commands are documented
 in [docs/screenshots/README.md](docs/screenshots/README.md). Do not capture real
 personal notes for repository screenshots.
 
@@ -193,8 +194,8 @@ StormPad remains a standalone local-first notepad. This phase does not add
 recording, live transcription, AI writing, cloud storage, collaboration,
 arbitrary embeds, databases, or publishing.
 
-- **Phase 5.1.3 (current):** native note/project sharing, direct-row project
-  reordering, and note movement between Projects and Unfiled.
+- **Phase 5.1.4 (current):** data-safe native Return handling, trustworthy
+  sidebar hit-testing/drag surfaces, and close/reopen lifecycle repair.
 - **Phase 6 (next, after manual review):** generate the official `.icns`, build
   a standalone `StormPad.app`, install-test it from `/Applications`, and create
   a drag-to-Applications `.dmg`.

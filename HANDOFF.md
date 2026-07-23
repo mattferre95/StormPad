@@ -4,7 +4,8 @@ Living continuation document for the native macOS StormPad project.
 
 ## Current status
 
-Phase 5.1.3 is complete on `feature/notion-editor`. Phase 6 has **not** started.
+Phase 5.1.4 critical regression repair is complete locally on
+`feature/notion-editor`. Phase 6 has **not** started.
 
 - **Project:** `/Users/mattferre/web/APP/Stormpad`
 - **Phase 5.1.3 starting point:** `e298315`
@@ -12,6 +13,32 @@ Phase 5.1.3 is complete on `feature/notion-editor`. Phase 6 has **not** started.
 - **Remote activity:** none; nothing was pushed or published
 - **Packaging/signing/notarization/release:** not started
 - **WisperFlow:** untouched
+
+## Phase 5.1.4 critical regression repair
+
+The user-approved Share Note path remains unchanged. The repair is limited to
+Return handling, sidebar hit-testing, and the reusable main-window lifecycle.
+
+- Return now performs the native selection replacement first, then derives any
+  block continuation from the post-edit `NSTextStorage`. It no longer rebuilds
+  from a pre-Return semantic snapshot that can omit marked or just-typed text.
+  The structural operation has one safe undo/redo snapshot.
+- Project, Unfiled, All Notes, and category rows now convert AppKit's
+  superview-space `hitTest:` point into row-local coordinates. The navigation
+  document fills a tall `NSClipView`, so visible rows and their actual
+  hit-test/drag surfaces coincide.
+- The controller-owned `NSWindow` is not released on close. Because StormPad
+  remains running after its last window closes, Dock reopen can show that same
+  valid window.
+- The native smoke sends real `NSEvent` key-downs through the title field
+  editor and body first responder. It covers title Return, rapid/pending-save
+  Return, repeated Return, selection replacement, inline formatting, accented
+  Unicode/emoji, list continuation/exit, undo/redo, save/reload, row
+  hit-testing, and closing/reopening the same window.
+
+The clean verification remains 273 tests plus Ruff, compileall, imports, three
+themes, self-check, isolated smoke, and expanded native interaction smoke. A
+sanitized inspected fixture is in `docs/screenshots/phase-5-1-4/`.
 
 Do not package, sign, notarize, publish, push, create a release, or start Phase 6
 until the user completes the hands-on review and explicitly approves it.
@@ -387,3 +414,34 @@ If this review passes, approve Phase 5.1.3 and only then request Phase 6.
 
 WisperFlow was untouched. No file under
 `/Users/mattferre/web/APP/wisperflow_` was read, modified, moved, or copied.
+
+
+
+# CREDIT-EFFICIENT DEVELOPMENT RULE
+
+For all future StormPad work, keep scope strictly limited to the exact feedback points provided by the user.
+
+Do not automatically:
+
+- inspect the entire repository
+- run the full test suite
+- run exhaustive manual verification
+- capture large screenshot matrices
+- relaunch repeatedly
+- test unrelated features
+- refactor adjacent systems
+- perform broad regression passes
+- verify every historical requirement
+
+Instead:
+
+1. Inspect only the files directly related to the reported issue.
+2. Reproduce only the specific bug or behavior mentioned.
+3. Make the smallest safe fix.
+4. Run only targeted tests for the changed behavior.
+5. Report what was changed and what was not tested.
+6. Stop after the requested feedback points are addressed.
+
+Only perform full verification, broad regression testing, extensive screenshots, or whole-app audits when the user explicitly asks for them.
+
+Weekly model credits are limited, so avoid unnecessary exploration and repeated validation.

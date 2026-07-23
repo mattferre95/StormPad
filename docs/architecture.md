@@ -99,6 +99,13 @@ The note is atomically written to its current path before a title-derived
 rename is attempted. If the rename fails, the valid, newly saved old file
 remains in place and the UI reports the failure.
 
+Return is a post-edit structural operation. `NSTextView` first applies the
+native selection replacement to current text storage; only then does the editor
+derive the next semantic block and rebuild its attributed representation. This
+prevents marked, rapid, Unicode, or pending-autosave text from being replaced by
+an older semantic snapshot. One document snapshot owns undo/redo for the
+structural step.
+
 ## Stable identity and filename migration
 
 Every new note receives one UUID, stored as `ID: <uuid>` in Markdown metadata.
@@ -261,6 +268,20 @@ Dragging an exported project ZIP to Finder is deliberately deferred. External
 dragging returns no operation so StormPad can never move a managed project
 folder out of its library. Block dragging inside the editor remains out of
 scope.
+
+## Phase 5.1.4 interaction and lifecycle repair
+
+`NSView.hitTest:` receives a point in the receiver's superview coordinate
+system. Sidebar rows convert that point to local bounds before accepting the
+whole row. The flipped navigation document also fills the scroll clip's height,
+so visible All Notes, Unfiled, Project, and Category rows are their true click
+and drop surfaces. Native table drag writers and private UUID payload validation
+remain unchanged.
+
+StormPad intentionally stays running after its last window closes. The
+controller therefore owns an `NSWindow` with `releasedWhenClosed` disabled;
+the application delegate's Dock-reopen callback can safely call `show()` on
+that same window after a real close cycle.
 
 ## Layers
 

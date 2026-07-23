@@ -3,6 +3,16 @@
 Repository screenshots must use generated fixtures in a temporary directory,
 never real notes or imported personal files.
 
+## Phase 5.1.4 capture status
+
+`phase-5-1-4/enter-navigation-repaired.png` and
+`phase-5-1-4/native-window-repaired.png` use the disposable fixture at
+`/tmp/stormpad-phase514-fixture.t4wIic/Notes`. Both were visually inspected on
+2026-07-24 and show the selected Alpha project plus the preserved
+`My Project Plan`, `First line`, and `Café 🚀` content after the native Return
+matrix. The first uses StormPad's app-owned capture hook; the second is a
+window-ID-only system capture after Screen Recording preflight succeeded.
+
 ## Phase 5.1.3 capture status
 
 The following committed captures use the disposable fixture at
