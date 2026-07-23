@@ -29,6 +29,7 @@ _KEY_THEME = "theme"
 _KEY_LAST_NOTE = "last_note_id"
 _KEY_LAST_CATEGORY = "last_category"
 _KEY_NOTES_COLLAPSED = "notes_list_collapsed"
+_KEY_SHOW_BLOCK_CONTROLS = "show_block_controls"
 
 
 class PreferencesBackend(Protocol):
@@ -116,3 +117,14 @@ class Preferences:
     @notes_list_collapsed.setter
     def notes_list_collapsed(self, value: bool) -> None:
         self._backend.set(_KEY_NOTES_COLLAPSED, "true" if value else "false")
+
+    # -- Editor -------------------------------------------------------------
+
+    @property
+    def show_block_controls(self) -> bool:
+        """Whether hover-only add/drag gutter controls are enabled."""
+        return self._backend.get(_KEY_SHOW_BLOCK_CONTROLS) != "false"
+
+    @show_block_controls.setter
+    def show_block_controls(self, value: bool) -> None:
+        self._backend.set(_KEY_SHOW_BLOCK_CONTROLS, "true" if value else "false")

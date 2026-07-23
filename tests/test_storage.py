@@ -113,6 +113,19 @@ def test_build_filename():
     assert storage.build_filename("App idea") == "app-idea.md"
 
 
+@pytest.mark.parametrize(
+    "requested,expected",
+    [
+        ("My File.md", "my-file.md"),
+        ("My File", "my-file.md"),
+        ("../unsafe/name?.MD", "name.md"),
+        ("///", "untitled-note.md"),
+    ],
+)
+def test_build_manual_filename(requested, expected):
+    assert storage.build_manual_filename(requested) == expected
+
+
 def test_unique_path_avoids_collision(tmp_path):
     first = tmp_path / "idea.md"
     first.write_text("x", encoding="utf-8")
@@ -304,6 +317,34 @@ def test_commit_title_filename_failure_keeps_old_file(tmp_path, monkeypatch):
     assert old.exists()
 
 
+def test_commit_manual_filename_preserves_title_id_and_avoids_collision(tmp_path):
+    (tmp_path / "chosen-name.md").write_text("occupied", encoding="utf-8")
+    note = make_note(tmp_path, path=tmp_path / "old.md", title="Unchanged title")
+    storage.write_note(note)
+    old = note.path
+    storage.commit_manual_filename(note, "../Chosen Name.md")
+    assert note.path.name == "chosen-name-2.md"
+    assert note.title == "Unchanged title"
+    assert note.id == NOTE_ID
+    assert note.path.exists() and not old.exists()
+    assert storage.read_note(note.path).id == NOTE_ID
+
+
+def test_commit_manual_filename_failure_keeps_old_file(tmp_path, monkeypatch):
+    note = make_note(tmp_path, path=tmp_path / "old.md")
+    storage.write_note(note)
+    old = note.path
+
+    def fail_rename(source, target):
+        raise OSError("rename failed")
+
+    monkeypatch.setattr(storage.os, "replace", fail_rename)
+    with pytest.raises(storage.FilenameRenameError):
+        storage.commit_manual_filename(note, "new name.md")
+    assert note.path == old
+    assert old.exists()
+
+
 def test_transcript_visibility_and_collapse_metadata_round_trip(tmp_path):
     note = make_note(
         tmp_path,
@@ -331,3 +372,17 @@ def test_legacy_transcript_is_visible_without_new_metadata(tmp_path):
     parsed = storage.parse(text, path=tmp_path / "legacy.md")
     assert parsed.transcript_visible is True
     assert parsed.transcript[0].text == "A legacy chunk."
+
+
+def test_hidden_transcript_content_round_trips_without_container(tmp_path):
+    note = make_note(
+        tmp_path,
+        transcript=[TranscriptBlock("00:00:04", "Preserved but hidden.")],
+        transcript_visible=False,
+    )
+    note.transcript_visible = False
+    text = storage.serialize(note)
+    assert "Transcript-Block: hidden" in text
+    parsed = storage.parse(text, path=note.path)
+    assert parsed.transcript_visible is False
+    assert parsed.transcript[0].text == "Preserved but hidden."

@@ -16,7 +16,9 @@ from . import __app_name__, __version__
 def _build_menu(app, controller) -> None:
     from AppKit import NSMenu, NSMenuItem
 
+    from .blocks import COLOR_TOKENS, BlockType
     from .theme import all_themes
+    from .views.palette import symbol_image
 
     main_menu = NSMenu.alloc().init()
 
@@ -39,11 +41,13 @@ def _build_menu(app, controller) -> None:
     # App menu.
     app_menu = add_menu(__app_name__)
     add_item(app_menu, f"About {__app_name__}", "orderFrontStandardAboutPanel:", "")
+    add_item(app_menu, "Settings…", "showSettings:", ",", target=controller)
     app_menu.addItem_(NSMenuItem.separatorItem())
     add_item(app_menu, f"Hide {__app_name__}", "hide:", "h")
     add_item(app_menu, "Hide Others", "hideOtherApplications:", "h").setKeyEquivalentModifierMask_(
         (1 << 19) | (1 << 20)  # Command | Option
     )
+    add_item(app_menu, "Show All", "unhideAllApplications:", "")
     app_menu.addItem_(NSMenuItem.separatorItem())
     add_item(app_menu, f"Quit {__app_name__}", "terminate:", "q")
 
@@ -51,9 +55,13 @@ def _build_menu(app, controller) -> None:
     file_menu = add_menu("File")
     add_item(file_menu, "New Note", "newNote:", "n", target=controller)
     add_item(file_menu, "Save", "saveNote:", "s", target=controller)
+    add_item(file_menu, "Export as TXT…", "exportNoteTXT:", "", target=controller)
     file_menu.addItem_(NSMenuItem.separatorItem())
-    add_item(file_menu, "Open File", "openFile:", "o", target=controller)
+    add_item(file_menu, "Open Markdown File", "openFile:", "o", target=controller)
     add_item(file_menu, "Reveal in Finder", "revealInFinder:", "", target=controller)
+    add_item(file_menu, "Rename Filename…", "renameFilename:", "", target=controller)
+    file_menu.addItem_(NSMenuItem.separatorItem())
+    add_item(file_menu, "Delete Note…", "deleteNote:", "", target=controller)
     file_menu.addItem_(NSMenuItem.separatorItem())
     add_item(file_menu, "Close Window", "performClose:", "w")
 
@@ -65,6 +73,7 @@ def _build_menu(app, controller) -> None:
     add_item(edit_menu, "Cut", "cut:", "x")
     add_item(edit_menu, "Copy", "copy:", "c")
     add_item(edit_menu, "Paste", "paste:", "v")
+    add_item(edit_menu, "Delete", "delete:", "")
     add_item(edit_menu, "Select All", "selectAll:", "a")
     edit_menu.addItem_(NSMenuItem.separatorItem())
     speech_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_("Speech", None, "")
@@ -90,11 +99,65 @@ def _build_menu(app, controller) -> None:
     add_item(format_menu, "Italic", "toggleItalic:", "i", target=controller)
     add_item(format_menu, "Underline", "toggleUnderline:", "u", target=controller)
     add_item(format_menu, "Link…", "editLink:", "k", target=controller)
+    format_menu.addItem_(NSMenuItem.separatorItem())
+
+    block_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+        "Block Type", None, ""
+    )
+    block_menu = NSMenu.alloc().initWithTitle_("Block Type")
+    block_item.setSubmenu_(block_menu)
+    for title, kind, symbol in (
+        ("Text", BlockType.TEXT, "text.alignleft"),
+        ("Heading 1", BlockType.HEADING_1, "textformat.size.larger"),
+        ("Heading 2", BlockType.HEADING_2, "textformat.size"),
+        ("Heading 3", BlockType.HEADING_3, "textformat"),
+        ("To-do", BlockType.TODO, "checkmark.square"),
+        ("Bulleted List", BlockType.BULLET, "list.bullet"),
+        ("Numbered List", BlockType.NUMBERED, "list.number"),
+        ("Quote", BlockType.QUOTE, "quote.opening"),
+        ("Divider", BlockType.DIVIDER, "minus"),
+        ("Link", BlockType.LINK, "link"),
+        ("Image", BlockType.IMAGE, "photo"),
+        ("File", BlockType.FILE, "doc"),
+        ("Transcript", BlockType.TRANSCRIPT, "waveform"),
+    ):
+        entry = add_item(
+            block_menu, title, "insertBlockType:", "", target=controller
+        )
+        entry.setRepresentedObject_(kind.value)
+        image = symbol_image(symbol, size=12)
+        if image is not None:
+            entry.setImage_(image)
+    format_menu.addItem_(block_item)
+
+    def add_color_submenu(title: str, mode: str) -> None:
+        parent = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(title, None, "")
+        submenu = NSMenu.alloc().initWithTitle_(title)
+        parent.setSubmenu_(submenu)
+        for token in COLOR_TOKENS:
+            color_title = token.replace("_", " ").title()
+            entry = add_item(
+                submenu, color_title, "chooseColor:", "", target=controller
+            )
+            entry.setRepresentedObject_(f"{mode}:{token}")
+            entry.setImage_(controller.color_swatch_image(token, mode))
+            entry.setAccessibilityLabel_(f"{title} {color_title}")
+        format_menu.addItem_(parent)
+
+    add_color_submenu("Text Color", "text")
+    add_color_submenu("Highlight Color", "highlight")
 
     # View menu.
     view_menu = add_menu("View")
     add_item(view_menu, "Focus Search", "focusSearch:", "f", target=controller)
-    add_item(view_menu, "Collapse / Expand Notes", "toggleNotesPanel:", "", target=controller)
+    add_item(view_menu, "Collapse Notes", "toggleNotesPanel:", "", target=controller)
+    add_item(
+        view_menu,
+        "Show Block Controls on Hover",
+        "toggleBlockControls:",
+        "",
+        target=controller,
+    )
     view_menu.addItem_(NSMenuItem.separatorItem())
     theme_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_("Theme", None, "")
     theme_menu = NSMenu.alloc().initWithTitle_("Theme")
@@ -107,6 +170,15 @@ def _build_menu(app, controller) -> None:
         entry.setRepresentedObject_(theme_id)  # checkmark managed by validateMenuItem_
         theme_menu.addItem_(entry)
     view_menu.addItem_(theme_item)
+
+    window_menu = add_menu("Window")
+    add_item(window_menu, "Minimize", "performMiniaturize:", "m")
+    add_item(window_menu, "Zoom", "performZoom:", "")
+    window_menu.addItem_(NSMenuItem.separatorItem())
+    add_item(window_menu, "Bring All to Front", "arrangeInFront:", "")
+
+    help_menu = add_menu("Help")
+    add_item(help_menu, "StormPad Help", "showHelp:", "?", target=controller)
 
     # The future voice-session seam stays available for development without
     # presenting transcript appending as a primary end-user control.

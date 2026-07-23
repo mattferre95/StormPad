@@ -21,7 +21,7 @@ from pathlib import Path
 
 from . import paths, storage
 from .attachments import note_attachment_dir
-from .errors import NoteNotFoundError
+from .errors import NoteNotFoundError, StorageError
 from .models import (
     DEFAULT_CATEGORY,
     Note,
@@ -145,6 +145,23 @@ class NoteStore:
         note.set_title(title, self._clock())
         storage.write_note(note)
         storage.commit_title_filename(note)
+        return note
+
+    def rename_filename(self, note_id: str, requested: str) -> Note:
+        """Commit a manual safe filename without changing title or stable id."""
+        note = self.load_note(note_id)
+        previous_mode = note.metadata.get("Filename-Mode")
+        note.metadata["Filename-Mode"] = "manual"
+        storage.write_note(note)
+        try:
+            storage.commit_manual_filename(note, requested)
+        except StorageError:
+            if previous_mode is None:
+                note.metadata.pop("Filename-Mode", None)
+            else:
+                note.metadata["Filename-Mode"] = previous_mode
+            storage.write_note(note)
+            raise
         return note
 
     def update_body(self, note_id: str, body: str) -> Note:

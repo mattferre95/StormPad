@@ -82,6 +82,13 @@ def build_filename(title_or_slug: str) -> str:
     return f"{slugify(title_or_slug)}.md"
 
 
+def build_manual_filename(requested: str) -> str:
+    """Sanitize a user-entered filename and enforce the ``.md`` extension."""
+    leaf = Path(str(requested).strip()).name
+    stem = Path(leaf).stem if Path(leaf).suffix.lower() == ".md" else leaf
+    return build_filename(stem)
+
+
 def unique_path(notes_dir: Path, filename: str, *, excluding: Path | None = None) -> Path:
     """Return a non-colliding path in ``notes_dir`` for ``filename``.
 
@@ -112,7 +119,11 @@ def serialize(note: Note) -> str:
         f"ID: {note.id}",
     ]
     if note.transcript_visible or note.transcript:
-        state = "collapsed" if note.transcript_collapsed else "expanded"
+        state = (
+            "hidden"
+            if not note.transcript_visible
+            else ("collapsed" if note.transcript_collapsed else "expanded")
+        )
         metadata_lines.append(f"Transcript-Block: {state}")
     metadata_lines.extend(
         f"{key}: {value}"
@@ -203,6 +214,7 @@ def parse(
     unknown_metadata: dict[str, str] = {}
     transcript_visible = False
     transcript_collapsed = False
+    transcript_hidden = False
 
     # Locate section headers.
     notes_idx: int | None = None
@@ -239,6 +251,7 @@ def parse(
         elif key == "Transcript-Block":
             transcript_visible = value.lower() in ("expanded", "collapsed")
             transcript_collapsed = value.lower() == "collapsed"
+            transcript_hidden = value.lower() == "hidden"
         else:
             unknown_metadata[key] = value
 
@@ -252,12 +265,14 @@ def parse(
     transcript: list[TranscriptBlock] = []
     if transcript_idx is not None:
         transcript = _parse_transcript(lines[transcript_idx + 1 :])
-        transcript_visible = transcript_visible or bool(transcript)
+        transcript_visible = transcript_visible or (
+            bool(transcript) and not transcript_hidden
+        )
 
     legacy_id = note_id or path.stem
     stable_id = stored_id or _legacy_uuid(path)
 
-    return Note(
+    note = Note(
         id=stable_id,
         path=path,
         title=title,
@@ -272,6 +287,9 @@ def parse(
         id_persisted=stored_id is not None,
         legacy_id=None if stored_id else legacy_id,
     )
+    if transcript_hidden:
+        note.transcript_visible = False
+    return note
 
 
 def _strip_blank_edges(lines: list[str]) -> str:
@@ -333,6 +351,25 @@ def commit_title_filename(note: Note) -> Path:
     target = unique_path(
         note.path.parent,
         build_filename(note.title or DEFAULT_TITLE),
+        excluding=note.path,
+    )
+    if target == note.path:
+        return note.path
+    try:
+        os.replace(note.path, target)
+    except OSError as exc:
+        raise FilenameRenameError(
+            f"saved note but could not rename {note.path.name} to {target.name}"
+        ) from exc
+    note.path = target
+    return target
+
+
+def commit_manual_filename(note: Note, requested: str) -> Path:
+    """Move a saved note to a safe, collision-free user-requested filename."""
+    target = unique_path(
+        note.path.parent,
+        build_manual_filename(requested),
         excluding=note.path,
     )
     if target == note.path:

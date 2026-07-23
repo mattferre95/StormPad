@@ -91,3 +91,18 @@ def test_note_filename_rename_does_not_break_attachment_link(tmp_path):
     assert renamed.path.name == "after.md"
     assert (renamed.path.parent / relative).resolve() == managed.resolve()
     assert managed.exists()
+
+
+def test_manual_filename_rename_does_not_break_attachment_link(tmp_path):
+    store = NoteStore(tmp_path / "StormPad" / "Notes")
+    note = store.create_note("Before")
+    source = tmp_path / "brief.pdf"
+    source.write_bytes(b"pdf")
+    managed = attachments.import_attachment(source, store.notes_dir, note.id)
+    relative = attachments.relative_markdown_path(note.path, managed)
+    store.update_body(note.id, f"[brief.pdf]({relative})")
+    renamed = store.rename_filename(note.id, "Chosen Name.md")
+    assert renamed.path.name == "chosen-name.md"
+    assert renamed.id == note.id
+    assert (renamed.path.parent / relative).resolve() == managed.resolve()
+    assert managed.exists()

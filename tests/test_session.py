@@ -73,6 +73,35 @@ def test_rename_commits_filename_but_keeps_stable_id(store, clock):
     assert store.load_note(note.id).title == "A Completely Different Title"
 
 
+def test_manual_filename_rename_keeps_title_and_stable_id(store):
+    note = store.create_note("Title stays")
+    original = note.path
+    renamed = store.rename_filename(note.id, "Custom File.MD")
+    assert renamed.path.name == "custom-file.md"
+    assert renamed.title == "Title stays"
+    assert renamed.id == note.id
+    assert not original.exists()
+    reloaded = store.load_note(note.id)
+    assert reloaded.path.name == "custom-file.md"
+    assert reloaded.title == "Title stays"
+    assert reloaded.metadata["Filename-Mode"] == "manual"
+
+
+def test_manual_filename_failure_restores_previous_file_and_mode(store, monkeypatch):
+    note = store.create_note("Original")
+    original = note.path
+
+    def fail_commit(_note, _requested):
+        raise FilenameRenameError("manual rename failed")
+
+    monkeypatch.setattr("stormpad.storage.commit_manual_filename", fail_commit)
+    with pytest.raises(FilenameRenameError, match="manual rename failed"):
+        store.rename_filename(note.id, "new name.md")
+    reloaded = store.load_note(note.id)
+    assert reloaded.path == original
+    assert "Filename-Mode" not in reloaded.metadata
+
+
 def test_update_body_and_timestamp(store, clock):
     note = store.create_note("Note")
     created_updated = note.updated_at

@@ -20,6 +20,7 @@ def test_defaults():
     assert prefs.theme == STORM_BLUE == DEFAULT_THEME
     assert prefs.last_note_id is None
     assert prefs.last_category == models.ALL_NOTES
+    assert prefs.show_block_controls is True
 
 
 def test_theme_persists_through_backend():
@@ -75,3 +76,12 @@ def test_note_list_collapse_persists():
     assert Preferences(backend).notes_list_collapsed is True
     prefs.notes_list_collapsed = False
     assert Preferences(backend).notes_list_collapsed is False
+
+
+def test_show_block_controls_persists():
+    backend = InMemoryBackend()
+    prefs = Preferences(backend)
+    prefs.show_block_controls = False
+    assert Preferences(backend).show_block_controls is False
+    prefs.show_block_controls = True
+    assert Preferences(backend).show_block_controls is True
