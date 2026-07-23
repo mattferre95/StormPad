@@ -15,10 +15,10 @@ writing canvas. Notes stay as human-readable Markdown on your Mac; attachments
 are copied into local managed folders. There are no accounts, cloud sync,
 telemetry, external AI services, or web views.
 
-> **Status:** Phase 5.1, the clean block-editor redesign, is implemented on
-> `feature/notion-editor` and ready for review. Phase 6 packaging has not
-> started: there is no final `.app`, `.icns`, `.dmg`, signing, notarization,
-> release, or landing page yet.
+> **Status:** Phase 5.1.1 interaction stabilization is implemented on
+> `feature/notion-editor` and ready for hands-on review. Phase 6 packaging has
+> not started: there is no final `.app`, `.icns`, `.dmg`, signing,
+> notarization, release, or landing page yet.
 
 ## What is implemented
 
@@ -28,21 +28,32 @@ telemetry, external AI services, or web views.
   title-to-body keyboard transition.
 - Native block editor for Text, Heading 1–3, To-do, Bulleted list, Numbered
   list, Quote, Divider, Link, Image, File, and optional Transcript.
-- Native `+` block menu, Option-insert-above, block conversion, and a stable
-  Move Up / Move Down reorder menu.
+- Pointer-following `+` and drag controls in a dedicated non-overlapping gutter,
+  with native vertical drag reordering and an insertion line.
+- Functional native block commands with hovered-block routing,
+  Option-insert-above, empty-block conversion, undo, autosave, and relaunch
+  round trips.
 - Bold, italic, underline, link, curated text colors, and curated highlights,
-  with keyboard shortcuts and a contextual formatting toolbar.
+  with keyboard shortcuts and a contextual formatting toolbar whose color
+  controls use accessible semantic swatches.
 - Debounced atomic autosave, native undo/redo, search, categories, restored
   selection, Copy Note, Open File, Reveal in Finder, Delete to Trash, and
   Speak Selection.
 - Stable UUID note identity independent of title/filename.
 - Safe title-derived filenames such as `my-business-plan.md`, with collision
-  suffixes and legacy-note migration.
+  suffixes, legacy-note migration, and an explicit sanitized manual rename
+  mode available from Note Info.
 - Managed local images/files under `Attachments/<stable-note-id>/`, including
   native image previews, file type/size, Open/Reveal, and conservative orphan
   tracking.
-- Transcript chunks kept separate from editable prose and shown only when
-  content exists or a Transcript block is explicitly inserted.
+- A protected native Transcript container with empty/populated states,
+  collapse/expand, timestamped read-only rows, contextual test append/chunk
+  actions, search, undo, and persistence.
+- Note Info with current filename/path/dates/category/word count and native
+  open/reveal/rename/export/settings actions.
+- Deterministic plain-text export through a native save panel.
+- Complete native application menus and a reusable Settings window for theme,
+  hover controls, and local storage locations.
 - Storm Blue, Light, and Deep Dark themes with live switching.
 
 ## Run
@@ -70,8 +81,10 @@ python -m stormpad
 ```bash
 ./scripts/test.sh
 ./.venv/bin/ruff check .
-./.venv/bin/python -m compileall -q stormpad tests
+./.venv/bin/python -m compileall -q stormpad scripts tests
 ./.venv/bin/python -m stormpad --self-check
+./.venv/bin/python -m stormpad --smoke
+./.venv/bin/python scripts/native_interaction_smoke.py
 ```
 
 The test suite is headless and uses temporary directories. Native `--smoke`
@@ -121,11 +134,12 @@ attachment policy, filename behavior, and legacy migration.
 | **Light** | Cool white canvas with soft gray-blue selection. |
 | **Deep Dark** | Near-black zinc surfaces for quiet focus. |
 
-Switch from **View ▸ Theme**. Theme and collapsed-note-list state persist.
+Switch from **View ▸ Theme** or **StormPad ▸ Settings…**. Theme,
+collapsed-note-list state, and the hover-control preference persist.
 
 ## Screenshots
 
-Sanitized Phase 5.1 fixtures and reproducible capture commands are documented
+Sanitized Phase 5.1.1 fixtures and reproducible capture commands are documented
 in [docs/screenshots/README.md](docs/screenshots/README.md). Do not capture real
 personal notes for repository screenshots.
 
@@ -145,8 +159,10 @@ stormpad/
   models.py / storage.py     note model, envelope, identity, atomic file I/O
   session.py                 CRUD and transcript integration seam
   preferences.py / theme.py  persisted state and three complete palettes
+  exporter.py                deterministic readable TXT output
   views/block_editor.py      native writing page, gutter and formatting
   views/note_list.py         selected rows and collapsible panel
+  views/settings.py          reusable native Settings window
 ```
 
 See [docs/architecture.md](docs/architecture.md) for selection, undo, autosave,
@@ -158,7 +174,8 @@ StormPad remains a standalone local-first notepad. This phase does not add
 recording, live transcription, AI writing, cloud storage, collaboration,
 arbitrary embeds, databases, or publishing.
 
-- **Phase 5.1 (current):** clean native block editor and storage migration.
+- **Phase 5.1.1 (current):** stabilize real editor interactions, native drag,
+  Transcript, Note Info/TXT export, menus, swatches, and Settings.
 - **Phase 6 (next, after manual review):** generate the official `.icns`, build
   a standalone `StormPad.app`, install-test it from `/Applications`, and create
   a drag-to-Applications `.dmg`.

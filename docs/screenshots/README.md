@@ -3,119 +3,149 @@
 Repository screenshots must use generated fixtures in a temporary directory,
 never real notes or imported personal files.
 
-## Phase 5.1 capture status
+## Phase 5.1.1 capture status
 
-A native Storm Blue active-canvas screenshot was captured and visually
-inspected on 2026-07-23:
+The following native captures were launched against isolated `/tmp` libraries
+and visually inspected on 2026-07-23. They are ephemeral verification artifacts,
+not committed public assets.
 
-```text
-/var/folders/z4/lznm_6tn1l3dc4sf7wm25d100000gn/T/codex-shot-2026-07-23_19-54-43.png
-```
+| State | Inspected capture |
+| --- | --- |
+| Storm Blue gutter, headings, lists, populated Transcript | `/tmp/stormpad-phase511-gutter-headings-lists.png` |
+| Complete working block menu | `/tmp/stormpad-phase511-block-menu.png` |
+| Native drag insertion line | `/tmp/stormpad-phase511-drag-insertion.png` |
+| Empty Transcript and append action | `/tmp/stormpad-phase511-transcript-empty.png` |
+| Contextual semantic color swatches | `/tmp/stormpad-phase511-color-swatches.png` |
+| Note Info filename/path/actions | `/tmp/stormpad-phase511-note-info.png` |
+| Native TXT export panel | `/tmp/stormpad-phase511-txt-export-panel.png` |
+| Settings Appearance/Editor/Storage | `/tmp/stormpad-phase511-settings-appearance.png` |
+| Collapsed Notes tab | `/tmp/stormpad-phase511-collapsed-notes.png` |
+| Light theme | `/tmp/stormpad-phase511-theme-light.png` |
+| Deep Dark theme | `/tmp/stormpad-phase511-theme-deep-dark.png` |
 
-It verifies the clear selected-note state, clean title/body page, headings,
-inline formatting, to-dos, quote, divider, and managed native image preview.
-It is an ephemeral inspection artifact, not a committed public asset.
+The Storm Blue capture also proves that gutter controls end before the
+92-point text inset, the drag handle does not cover characters, and heading,
+to-do, numbered, quote, divider, inline color/underline, and populated
+Transcript surfaces coexist. Light and Deep Dark were captured separately.
 
-The complete screenshot matrix still needs recapture after the final gutter
-coordinate adjustment: blank note, active canvas, block menu, formatting
-toolbar, image/file, transcript, collapsed note list, Storm Blue, Light, and
-Deep Dark. Do not describe those states as visually verified until their
-captures have been inspected.
+## Reproducible fixtures
 
-## Reproducible fixture
+Use separate preference suites as well as temporary note roots. This prevents a
+development capture from reading or changing the normal StormPad selection,
+theme, or collapsed-panel state.
 
 ```bash
-export STORMPAD_DEMO_ROOT="$(mktemp -d)"
-export STORMPAD_DEMO_NOTES="$STORMPAD_DEMO_ROOT/Notes"
+mkdir -p /tmp/stormpad-phase511-populated/Notes
+export STORMPAD_DEMO_NOTES=/tmp/stormpad-phase511-populated/Notes
+export STORMPAD_DEFAULTS_SUITE=com.stormpad.StormPad.ScreenshotFixture
 
 ./.venv/bin/python - "$STORMPAD_DEMO_NOTES" <<'PY'
 import sys
 from pathlib import Path
 from stormpad import models
-from stormpad.attachments import import_attachment, relative_markdown_path
 from stormpad.session import NoteStore
 
-notes = Path(sys.argv[1])
-store = NoteStore(notes)
-note = store.create_note("Product launch plan", models.SESSIONS)
-store.update_body(
-    note.id,
+store = NoteStore(Path(sys.argv[1]))
+note = store.create_note("September launch plan", models.SESSIONS)
+note.body = (
     "## Direction\n\n"
-    "A **focused** plan with <u>clear ownership</u> and "
+    "A **focused** launch with <u>clear ownership</u> and "
     '<span data-stormpad-color="cyan">calm momentum</span>.\n\n'
     "- [x] Define the first release\n\n"
-    "- [ ] Capture sanitized screenshots\n\n"
+    "- [ ] Capture the final screenshots\n\n"
+    "1. Confirm the release path\n\n"
     "> Keep the writing experience quiet and local-first.\n\n"
-    "---",
+    "---\n\n"
+    '<!-- stormpad:transcript collapsed="false" -->'
 )
-store.append_transcript_block(note.id, "Confirm the local launch plan.", 4)
+note.transcript_visible = True
+store.save_note(note)
+store.append_transcript_block(
+    note.id, "We should launch the first version in September.", 4
+)
+store.append_transcript_block(
+    note.id,
+    "The landing page should link directly to the GitHub release.",
+    17,
+)
 PY
 ```
 
-Add only generated/non-personal attachment fixtures if an image or file state
-is needed. The app copies them under the temporary root's sibling
-`Attachments/` directory.
+Create a second library with a visible Transcript marker and no chunks for the
+empty-state capture.
 
 ## Launch states
 
 ```bash
-# Active Storm Blue canvas, cursor in first block.
+# Hover gutter / Storm Blue / populated Transcript.
 STORMPAD_NOTES_DIR="$STORMPAD_DEMO_NOTES" \
+STORMPAD_DEFAULTS_SUITE=com.stormpad.StormPad.ScreenshotFixture \
 STORMPAD_THEME=storm_blue \
 STORMPAD_FOCUS_EDITOR=1 \
 STORMPAD_EDITOR_SELECTION=0,0 \
+STORMPAD_HOVER_BLOCK=0 \
 ./.venv/bin/python -m stormpad
 
-# Block insertion menu.
+# Block menu.
 STORMPAD_NOTES_DIR="$STORMPAD_DEMO_NOTES" \
-STORMPAD_THEME=storm_blue \
+STORMPAD_DEFAULTS_SUITE=com.stormpad.StormPad.ScreenshotMenu \
 STORMPAD_FOCUS_EDITOR=1 \
 STORMPAD_EDITOR_SELECTION=0,0 \
 STORMPAD_SHOW_BLOCK_MENU=1 \
 ./.venv/bin/python -m stormpad
 
-# Formatting toolbar (adjust range to fixture text).
+# Formatting swatches.
 STORMPAD_NOTES_DIR="$STORMPAD_DEMO_NOTES" \
-STORMPAD_THEME=storm_blue \
+STORMPAD_DEFAULTS_SUITE=com.stormpad.StormPad.ScreenshotColors \
 STORMPAD_FOCUS_EDITOR=1 \
 STORMPAD_EDITOR_SELECTION=12,7 \
+STORMPAD_SHOW_COLOR_MENU=text \
 ./.venv/bin/python -m stormpad
 
-# Theme variants.
-STORMPAD_NOTES_DIR="$STORMPAD_DEMO_NOTES" STORMPAD_THEME=light \
-./.venv/bin/python -m stormpad
-STORMPAD_NOTES_DIR="$STORMPAD_DEMO_NOTES" STORMPAD_THEME=deep_dark \
-./.venv/bin/python -m stormpad
+# Deterministic insertion line, Note Info, Settings, or TXT panel.
+STORMPAD_DRAG_INSERTION=2 ./.venv/bin/python -m stormpad
+STORMPAD_SHOW_NOTE_INFO=1 ./.venv/bin/python -m stormpad
+STORMPAD_SHOW_SETTINGS=1 ./.venv/bin/python -m stormpad
+STORMPAD_SHOW_EXPORT=1 ./.venv/bin/python -m stormpad
 
-# Truly blank library/new-note state.
-STORMPAD_NOTES_DIR="$(mktemp -d)/Notes" ./.venv/bin/python -m stormpad
+# Panel and theme variants.
+STORMPAD_COLLAPSE_NOTES=1 ./.venv/bin/python -m stormpad
+STORMPAD_THEME=light ./.venv/bin/python -m stormpad
+STORMPAD_THEME=deep_dark ./.venv/bin/python -m stormpad
 ```
 
-The collapse state is a real preference. Toggle it with the header/sidebar
-control, quit, and relaunch the same state to verify persistence. Restore it
-after capture if this is a normal development profile.
+Always include `STORMPAD_NOTES_DIR` and `STORMPAD_DEFAULTS_SUITE` from the
+fixture setup in the abbreviated commands above.
 
 ## Capture command
 
-Use the macOS screenshot skill/helper when available, or the normal
-Command-Shift-4 then Space workflow. Save public images in this directory with
-descriptive names only after visual inspection, for example:
+Use the macOS screenshot helper and inspect every output before reporting it:
 
-```text
-active-storm-blue.png
-active-light.png
-active-deep-dark.png
-block-menu.png
-formatting-toolbar.png
-collapsed-notes.png
+```bash
+python3 /Users/mattferre/.codex/skills/screenshot/scripts/take_screenshot.py \
+  --app Python --window-name StormPad --mode temp
 ```
 
-Dev hooks are limited to deterministic capture/setup:
+Transient native menus are separate transparent windows. Capture the complete
+sanitized application region so the menu retains its editor context.
+
+## Development hooks
+
+These hooks are deterministic capture/test setup only and are inert in normal
+launches:
 
 - `STORMPAD_NOTES_DIR`
+- `STORMPAD_DEFAULTS_SUITE`
 - `STORMPAD_INITIAL_QUERY`
 - `STORMPAD_THEME`
 - `STORMPAD_FOCUS_EDITOR`
 - `STORMPAD_EDITOR_SELECTION`
+- `STORMPAD_HOVER_BLOCK`
 - `STORMPAD_SHOW_BLOCK_MENU`
+- `STORMPAD_SHOW_COLOR_MENU`
+- `STORMPAD_DRAG_INSERTION`
+- `STORMPAD_SHOW_NOTE_INFO`
+- `STORMPAD_SHOW_SETTINGS`
+- `STORMPAD_SHOW_EXPORT`
+- `STORMPAD_COLLAPSE_NOTES`
 - `python -m stormpad --smoke`

@@ -13,7 +13,7 @@
 - User data is changed only by an explicit create/edit/action. Loading a legacy
   file does not rewrite or rename it.
 
-## Phase 5.1 block editor
+## Phase 5.1.1 stabilized block editor
 
 ### Representation and selection
 
@@ -36,12 +36,25 @@ to the title. The placeholder `Untitled` is never saved as content.
 
 ### Block interaction and undo
 
-The native gutter follows the active line using the layout manager plus the
-scroll view's visible offset. It is shown while the body is active and hidden
-when focus leaves. `+` opens one native insertion menu. Option-insert places a
-block above; an empty paragraph is converted in place. The handle intentionally
-uses a native Move Up / Move Down menu rather than custom drag reordering; this
-is the stable Phase 5.1 fallback.
+`GutterHoverView` is a dedicated transparent pointer tracker outside the text
+column. Pure `BlockGutterLayout` helpers model the text inset, gutter width,
+visible block rectangle, scroll offset, hit region, and control rectangles.
+The `+` and drag handle appear only beside the hovered semantic block, remain
+left of the 92-point text inset with explicit clearance, follow scrolling, and
+hide when the pointer leaves the block area. The hover-control preference may
+hide them, but native Format commands remain available.
+
+`+` captures the hovered block index before opening its retained native menu.
+Every visible command routes through `apply_block_command`: a non-empty block
+gets one insertion below (above with Option), while a compatible empty text
+block converts in place. The caret is restored to the editable portion and the
+same mutation path triggers undo and autosave.
+
+`BlockDragButton` uses AppKit dragging sessions with a private pasteboard type.
+The editor is a native drop destination, computes an insertion boundary, and
+draws a semantic-theme insertion line that cannot cross above the title.
+`reorder_blocks` preserves the entire `Block` value, including inline marks,
+checked/indent state, target/alt references, and Transcript placement.
 
 Text typing uses the standard `NSTextView` undo manager. Structural and
 formatting operations snapshot the affected attributed content and register
@@ -63,6 +76,15 @@ body-edit callback and therefore share the autosave path.
 
 No Markdown or HTML is executed. Unsupported color values are treated as plain
 content, output is escaped, and only the curated token set is serialized.
+Supported `<u>` and semantic `<span>` tags may begin a normal paragraph; the
+parser distinguishes them from unsupported raw HTML so leading formatting
+survives relaunch.
+
+The selection toolbar uses standard native controls. Its text/highlight color
+menus contain icon-only semantic swatches with accessible color labels,
+tooltips, a visible reset symbol, and a selected outline/checkmark. Standard
+`NSMenuItem` surfaces are used instead of custom menu-hosted views, avoiding
+AppKit drawing-lifecycle problems while preserving keyboard menu access.
 
 ### Autosave
 
@@ -94,6 +116,12 @@ uses `untitled-note.md`, and collisions use `-2`, `-3`, and so on. Existing
 files are not mass-renamed; a title filename is adopted on the next committed
 title/save.
 
+Note Info exposes the filename and current full path without adding permanent
+metadata to the writing canvas. An explicit manual rename is sanitized and
+collision-safe, keeps `.md`, preserves the UUID and attachment directory, and
+sets `Filename-Mode: manual`; later title saves no longer overwrite that manual
+choice. A failed move restores both the previous path and filename mode.
+
 ## Attachments
 
 `attachments.py` stores managed local copies at:
@@ -120,12 +148,42 @@ failure rolls both back.
 
 Timestamped transcript chunks remain in `Note.transcript`, separate from
 editable body prose. The optional transcript marker only records block
-visibility and collapse state. The editor renders transcript timestamps/text as
-protected content. A transcript appears only when chunks exist, the user
-inserts the block, or Development ▸ Append Test Transcript is invoked.
+visibility and collapse state. The editor renders a semantically themed native
+container inside the note flow. Its heading/collapse control and empty-state
+`Append Test Transcript` action remain interactive while its multiline
+timestamp/text rows are protected read-only attributed content. Context actions
+can collapse/expand, append test data, move/remove chunks, move the whole block,
+or remove its marker; inverse chunk operations register with the editor undo
+manager.
+
+A Transcript appears only when chunks exist, the user inserts the block, or
+Development ▸ Append Test Transcript is invoked. Removing/hiding the marker
+does not discard legacy chunks. Body search continues to include
+`Note.transcript`.
 
 No recording, live transcription, or WisperFlow integration exists in this
 phase.
+
+## Note actions, TXT export, menus, and Settings
+
+The upper-right Note Info menu and the Note menu share the same current-note
+actions. Filename/path/date/category/word count are read from the selected
+stable-ID note after pending edits are flushed. Open, Reveal, Rename, Export,
+Settings, and Delete operate on that current path.
+
+`exporter.py` is AppKit-free. It converts every semantic block and transcript
+chunk into readable UTF-8 text, strips Markdown/StormPad inline markup and
+storage metadata, renders to-dos as `[ ]`/`[x]`, and never writes back to the
+note. `window.py` wraps it in one native `NSSavePanel` and an atomic destination
+write.
+
+`app.py` constructs complete StormPad, File, Edit, Note, Format, View, Window,
+Help, and Development menus. Validation reflects selection, current block and
+inline formatting, panel state, theme, and enabled actions.
+
+`views/settings.py` owns one reusable window. Appearance changes theme
+immediately, Editor controls the persisted hover preference, and Storage shows
+the StormPad root/Notes/Attachments paths with separate Reveal actions.
 
 ## Layers
 
@@ -140,9 +198,10 @@ phase.
 | `block_serializer.py` | Semantic blocks → safe deterministic Markdown. |
 | `attachments.py` | Managed paths, atomic imports, collision policy, orphan manifest. |
 | `session.py` | `NoteStore` CRUD, transcript seam, note+attachment deletion policy. |
+| `exporter.py` | Semantic note → readable atomic UTF-8 TXT export. |
 | `paths.py` | Canonical/injectable local paths; no import-time creation. |
 | `search.py` | Unicode title/body/transcript search and category filtering. |
-| `preferences.py` | Theme, selection, category, and note-list-collapse preferences. |
+| `preferences.py` | Theme, selection, category, note-list-collapse, and hover-control preferences. |
 | `theme.py` | Complete Storm Blue, Light, and Deep Dark semantic tokens. |
 | `uihelpers.py` | Pure previews, selection rules, autosave, and block UI-state helpers. |
 
@@ -150,12 +209,13 @@ phase.
 
 | Module | Responsibility |
 | --- | --- |
-| `app.py` | Application lifecycle and native File/Edit/Note/Format/View/Development menus. |
-| `window.py` | Window/split controller, autosave wiring, actions, theme rebuild, Note Info. |
+| `app.py` | Application lifecycle and complete native application menu bar. |
+| `window.py` | Window/split controller, autosave, actions, validation, theme rebuild, Note Info/TXT. |
 | `defaults.py` | `NSUserDefaults` adapter for the preferences protocol. |
 | `views/block_editor.py` | Native title/body page, blocks, formatting toolbar, gutter, attachment rendering. |
 | `views/editor.py` | Compatibility re-export of the block editor. |
 | `views/note_list.py` | Themed persistent selection and collapsible middle column. |
+| `views/settings.py` | Reusable themed Settings window and storage reveal actions. |
 | `views/sidebar.py` | Search, categories, counts, branding, privacy indicator. |
 | `views/palette.py` | Theme token → AppKit color/font/symbol resolution. |
 | `speech.py` | Isolated AVSpeechSynthesizer wrapper and lifecycle. |
@@ -166,7 +226,9 @@ Theme changes flush pending edits, rebuild the AppKit view tree from a new
 palette, reload the stable selected note, and restore body selection/focus.
 The middle note-list panel stores its collapsed state through `Preferences`.
 Expanded width is preserved by the split view; collapsed width is a 46-point
-tab that cannot cover the editor.
+tab that cannot cover the editor. The left-facing collapse arrow stays in the
+expanded header and the right-facing expand arrow stays near the top of the
+collapsed tab.
 
 ## Compatibility
 

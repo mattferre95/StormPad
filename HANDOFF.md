@@ -2,117 +2,90 @@
 
 Living continuation document for the native macOS StormPad project.
 
-## Hard Phase 6 delivery requirements
+## Current status
 
-Phase 6 has **not** started. After Phase 5.1 is manually reviewed, final
-delivery still requires:
-
-- a standalone, double-clickable `StormPad.app`;
-- the official `assets/Stormpad_logo.png` converted into a correct `.icns`;
-- correct bundle name, identifier, version, and `Info.plist`;
-- self-contained dependencies with no source-folder or development-`.venv`
-  dependency;
-- reproducible build/install scripts;
-- installation and testing from `/Applications/StormPad.app`;
-- a drag-to-Applications `StormPad.dmg`;
-- later, a GitHub Release asset and mattferre.com showcase/download link.
-
-Do not package, sign, notarize, publish, push, create a release, or build the
-landing page before the Phase 5.1 review is complete and the user requests
-Phase 6.
-
-## Repository state
+Phase 5.1.1 interaction stabilization is complete on
+`feature/notion-editor`. Phase 6 has **not** started.
 
 - **Project:** `/Users/mattferre/web/APP/Stormpad`
-- **Branch:** `feature/notion-editor`
 - **Base:** `02c1513` (`main`, Phase 5)
-- **Phase 5.1 implementation commits:**
-  - `c8f2e6c` — `Phase 5.1: add stable IDs and Markdown block foundation`
-  - `6825afe` — `Phase 5.1: build native clean block editor`
-  - the current documentation/handoff checkpoint follows those commits
-- **Expected working tree at handoff:** clean
+- **Earlier Phase 5.1 commits:**
+  - `c8f2e6c` — stable IDs and Markdown block foundation
+  - `6825afe` — native clean block editor
+  - `896b70f` — migration, storage, and review documentation
+- **Phase 5.1.1 commits:**
+  - `9cd7020` — `fix: stabilize native block editor interactions`
+  - `84d9a30` — `feat: add note actions export settings and menus`
+  - the documentation checkpoint follows these commits
 - **Remote activity:** none; nothing was pushed or published
-- **Packaging status:** not started
+- **Packaging/signing/notarization/release:** not started
 
-Initial inspection confirmed the expected Phase 1–5 history
-(`fae719f` → `b20ff31` → `498e8ff` → `eeacc97` → `02c1513`) and a clean
-`main`. The verified baseline was 134 tests, Ruff clean, compile/import checks
-clean, `--smoke` successful with display permission, and a real isolated native
-launch.
+Do not package, sign, notarize, publish, push, create a release, or start the
+landing page until the user completes the hands-on review and explicitly
+requests Phase 6.
 
-## Phase 5.1 result
+## Initial inspection and baseline
 
-The dashboard-like editor was replaced with a calm page-style native block
-editor while preserving local Markdown, autosave, search, categories, actions,
-speech, and all three themes.
+The repository was clean on `feature/notion-editor`. The reported three Phase
+5.1 commits were present in the expected order. The initial test suite had 188
+passing tests; Ruff, compile/import checks, all three theme objects,
+`--self-check`, `--smoke`, and the baseline native launch were green.
 
-### Architecture
+Before production edits, `HANDOFF.md`, `README.md`, `PRD.md`,
+`docs/architecture.md`, `docs/storage.md`, screenshot instructions, relevant
+AppKit/storage/transcript/attachment/formatting code, and Phase 5.1 tests were
+read completely.
 
-The body is one rich native `NSTextView`. Paragraph attributes carry block
-semantics; attributed runs carry inline semantics. The title is a native
-`NSTextField` styled and keyboard-connected as the visual first block. This is
-AppKit-only: no web view, HTML contenteditable, browser JavaScript, React, or
-Electron.
+### Root causes
 
-Pure modules keep the model testable:
+- The body text column began at x=92 while the old `+` control occupied
+  approximately x=86…114, making overlap geometrically inevitable.
+- Gutter visibility and command routing followed the focused/caret block rather
+  than the pointer-hovered block.
+- The secondary control implemented Move Up/Move Down instead of native drag.
+- Block menu actions inferred the current caret/event after the menu opened
+  instead of retaining the hovered semantic index, so commands could target the
+  wrong paragraph or appear inert.
+- Empty structural Markdown such as `#`, `1.`, or `>` was not parsed back as
+  its semantic block, so inserting an empty type degraded after reload.
+- A paragraph beginning with supported StormPad `<u>`/semantic-color markup was
+  classified as raw HTML, losing semantic inline runs after reload.
+- Transcript insertion reused ordinary text-flow presentation instead of a
+  dedicated protected native container.
+- The contextual custom-view swatch grid triggered an AppKit/PyObjC drawing
+  lifecycle exception. It was replaced with stable standard native menu items
+  whose visible content is the semantic swatch icon.
 
-- `blocks.py` — block/inline types and structural operations;
-- `block_parser.py` / `block_serializer.py` — safe deterministic Markdown;
-- `attachments.py` — managed local copies and orphan policy;
-- `storage.py` — note envelope, identity migration, atomic write and filename
-  commit;
-- `session.py` — stable-ID CRUD, transcript seam, note+attachment deletion.
+## Phase 5.1.1 implementation
 
-The active paragraph is the block selection and the standard `NSTextView` range
-is the inline selection. Native typing undo remains intact. Structural and
-formatting operations register attributed-string snapshots with the same undo
-manager.
+### Pointer-following block gutter
 
-See `docs/architecture.md` and `docs/storage.md`.
+`GutterHoverView` tracks the pointer in a dedicated transparent gutter outside
+the writing column. Pure helpers model text inset, gutter width, block rect,
+scroll offset, hit region, and control rects.
 
-### Selected note and collapsible list
+- `+` and the unobtrusive drag target appear only beside the hovered block.
+- Both end before the 92-point text inset with explicit clearance.
+- They hide outside editable/insertable block regions and when the hover
+  preference is off.
+- Their canvas position accounts for the scroll view offset.
+- The old Move Up/Move Down button/menu is gone.
+- Accessibility labels are `Add Block` and `Drag Block`.
 
-The selected row uses a themed filled background, border, stronger title,
-left-side accent indicator, and restrained Storm Blue glow. Regular table
-selection keeps it visible while the editor has focus. Light uses soft
-gray-blue; Deep Dark uses quiet zinc.
+### Functional block commands
 
-The middle note-list panel collapses to a 46-point vertical native tab and the
-editor receives the freed width. Collapse state is stored by `Preferences`,
-survives relaunch, and is reapplied after theme rebuilds.
+The retained native menu captures the hovered index and Option state. Each
+command applies exactly once through the pure `apply_block_command` operation,
+converts a compatible empty text block in place, otherwise inserts below
+(above with Option), restores the caret/focus, registers undo, and enters the
+normal autosave path.
 
-### Clean new-note and writing canvas
-
-- No filename, word count, Created/Updated row, permanent “Saved locally” pill,
-  transcript card, or heavy editor border occupies the normal canvas.
-- Saving/Saved is a subtle transient top-right message; failures remain visible.
-- Metadata is available through Note ▸ Note Info, Open File, and Reveal in
-  Finder.
-- Native scroll views use autohiding overlay indicators.
-- A pristine note displays only the unsaved `Untitled` title placeholder.
-- Command-N focuses the title. Return enters the first text block; Up from the
-  first body position returns to the title.
-
-### Stable IDs and filenames
-
-New notes receive one UUID stored as `ID: <uuid>`. Identity and persisted
-selection no longer depend on the path. Legacy files without `ID` receive a
-deterministic UUIDv5 in memory and retain their old stem as a temporary lookup
-alias. Merely opening them does not rewrite, rename, or schedule an autosave;
-the next actual edit persists the ID.
-
-A safe title commit first atomically writes the current file, then moves it to
-a collision-free lowercase Unicode-friendly kebab name. Empty/unsafe titles
-fall back to `untitled-note.md`; collisions append `-2`, `-3`, and so on. The
-model path changes only after the move succeeds. A failed move leaves the
-newly saved old file and its in-memory path intact.
-
-### Blocks and keyboard behavior
-
-Implemented blocks:
+Proven semantic types:
 
 - Text
-- Heading 1, Heading 2, Heading 3
+- Heading 1
+- Heading 2
+- Heading 3
 - To-do
 - Bulleted list
 - Numbered list
@@ -123,235 +96,276 @@ Implemented blocks:
 - File
 - Transcript
 
-`+` opens a native insertion menu. It converts the current empty paragraph,
-inserts below by default, and supports Option-insert-above. The handle exposes
-undoable Move Up / Move Down. Return continues compatible blocks, empty lists
-and to-dos exit to Text, Backspace converts an empty non-text block, and
-Tab/Shift-Tab changes supported-list indentation. Cocoa ranges account for
-UTF-16 so emoji/non-BMP text does not shift later block boundaries.
+Parser/serializer tests cover empty and populated forms, insertion/conversion,
+no duplicates, Markdown round trips, and relaunch storage. Leading underline
+and color/highlight markup now remains a normal formatted paragraph.
 
-### Inline formatting
+### Native Transcript block
 
-Bold, italic, underline, link, curated text color, and curated highlight are
-implemented as semantic attributed runs. Commands B/I/U/K route through native
-menus. A contextual native toolbar appears for a non-empty selection and hides
-when selection/focus collapses.
+Transcript is a distinct protected multiline attributed container in the note
+flow, not a bullet or ordinary prose block.
 
-The stored palette is `default`, `gray`, `blue`, `cyan`, `green`, `yellow`,
-`orange`, `red`, and `purple`. Theme changes rerender tokens but do not mutate
-Markdown.
+- Header with collapse/expand state.
+- `No transcript yet` and `Append Test Transcript` empty state.
+- Timestamped read-only rows when populated.
+- Context actions for collapse/expand, test append, move/remove chunks,
+  move/remove the block.
+- Chunk operations participate in native undo.
+- Chunks remain in `Note.transcript`, separate from editable body prose.
+- Search includes transcript content.
+- Removing the marker uses `Transcript-Block: hidden` and does not destroy
+  existing transcript data.
+- Ordinary notes stay transcript-free unless inserted or legacy content exists.
+- Recording/live transcription/WisperFlow integration was not added.
 
-### Markdown
+### Native block drag reordering
 
-Standard Markdown is used for headings, emphasis, lists, to-dos, quote,
-divider, link, image, and file. Underline uses `<u>`. Curated colors use
-allow-listed `data-stormpad-color` / `data-stormpad-highlight` spans. Transcript
-placement/collapse uses a StormPad HTML comment. Markdown/HTML is never
-executed; output is escaped and unsafe color tokens are rejected.
+`BlockDragButton` starts an AppKit dragging session with a private pasteboard
+type. The editor is a native move destination, calculates an insertion boundary,
+and renders a semantic-theme insertion line. The title is outside the drag
+source/destination model and cannot be moved into the body.
 
-Unknown metadata is preserved. Existing Phase 1–5 title/Notes/Transcript files
-continue to load without an open-time rewrite.
+`reorder_blocks` preserves the complete payload: type, text, inline marks,
+to-do checked state, indent, target/alt attachment references, raw payload, and
+Transcript state. The native action path is undoable, autosaves, and survives
+reload.
 
-### Attachments
+### Collapsed Notes tab
 
-Managed copies live at:
+The expanded header has a left-facing collapse arrow. The narrow 46-point tab
+has a right-facing expand arrow near the top at the corresponding header
+height. It no longer centers vertically or covers editor content. Preference
+and split-width persistence remain intact. Accessibility labels are
+`Collapse Notes` and `Expand Notes`.
 
-```text
-~/Documents/StormPad/Attachments/<stable-note-id>/
-```
+### Filename and Note Info
 
-Imports are copied atomically, names are sanitized/collision-safe, and Markdown
-stores relative links from `Notes/`. Title/file rename therefore cannot break
-an attachment. Native images are aspect-constrained previews. File blocks show
-an icon, filename, type, and size; double-click opens through `NSWorkspace`.
-Context actions reveal or remove the block.
+The writing canvas remains free of a permanent filename pill. The upper-right
+`Open Note Info` control opens a native menu with filename, current full path,
+created/updated dates, category, word count, Rename, Export, Reveal, Open,
+Settings, and Delete actions.
 
-Removing a block records an orphan candidate in `.orphans.json` and does not
-risk deleting the managed file. Delete stages the note and its attachment
-directory together before the configured Trash strategy; failures roll back.
+Title commits remain the primary lowercase safe kebab naming flow. Explicit
+manual rename sanitizes input, preserves `.md`, resolves collisions, does not
+change the stable UUID or attachment directory, and stores
+`Filename-Mode: manual` so a later title save does not silently overwrite it.
+Rename failure restores the previous file/path/mode.
 
-### Transcript
+### Plain-text export
 
-Transcript chunks remain separate `Note.transcript` data. Ordinary blank notes,
-including Sessions, have no transcript block. Existing chunks, explicit block
-insertion, or Development ▸ Append Test Transcript make it appear. The editor
-renders timestamps/chunks as protected read-only content and persists
-collapsed/expanded state.
+File and Note Info expose `Export as TXT…` through one native `NSSavePanel`.
+`exporter.py` atomically writes a separate UTF-8 file containing title,
+readable headings/body/lists/to-dos/quotes/links/image alt/file names, and
+timestamped transcript chunks.
 
-No recording, live transcription, audio capture, or WisperFlow integration was
-implemented.
+It excludes the Markdown metadata envelope, stable UUID, filename/transcript UI
+state, StormPad color and underline markup, attachment directory internals, and
+other serialization details. Export never modifies the note or Markdown file.
 
-### Autosave, actions, themes, accessibility
+### Formatting swatches
 
-All editor mutations reuse the existing 0.4-second debounce. Note switch,
-close, and quit flush pending work; stale callbacks cannot write into a newly
-selected note. Theme switching flushes, rebuilds, then restores stable
-selection/focus without mutating content.
+The contextual text/highlight menus show nine icon-only semantic swatches:
+Default, Gray, Blue, Cyan, Green, Yellow, Orange, Red, and Purple. The selected
+swatch has a strong semantic outline and native checkmark; Default has a reset
+slash. Color names remain available through tooltips/accessibility labels.
 
-Copy Note, Open File, Reveal in Finder, Delete to Trash, Speak/Stop, search, and
-categories remain available through native menus/context actions. The primary
-toolbar now contains only collapse/expand, Note Info, and New Note. Append Test
-Transcript moved to Development.
+No unrestricted color picker was added. Bold, italic, underline, link,
+Cmd+B/I/U/K, allow-list validation, relaunch persistence, and theme-aware
+semantic rendering remain intact.
 
-New controls have labels/tooltips and comfortable targets. Theme tokens cover
-the gutter, formatting controls, selection, transcript, attachments, quote,
-divider, title placeholder, and collapsed tab across Storm Blue, Light, and
-Deep Dark.
+### Native menus and Settings
 
-## Files changed in Phase 5.1
+The menu bar now contains complete StormPad, File, Edit, Note, Format, View,
+Window, Help, and Development menus. Validation reflects note selection,
+current block type, inline selection/formatting, current theme, and Notes-panel
+state.
+
+One reusable `StormPad Settings` window is available from Cmd+, and Note Info.
+It provides:
+
+- Appearance: immediate persisted Storm Blue, Light, or Deep Dark.
+- Editor: persisted `Show block controls on hover`; native menus remain the
+  insertion alternative.
+- Storage: StormPad root, Notes, and Attachments paths plus explicit Reveal
+  actions for each.
+
+There are no accounts, sync, telemetry, analytics, AI, or WisperFlow settings.
+
+## Files changed in Phase 5.1.1
 
 New:
 
-- `stormpad/blocks.py`
-- `stormpad/block_parser.py`
-- `stormpad/block_serializer.py`
-- `stormpad/attachments.py`
-- `stormpad/views/block_editor.py`
-- `tests/test_blocks.py`
-- `tests/test_attachments.py`
-- `docs/storage.md`
+- `scripts/native_interaction_smoke.py`
+- `stormpad/exporter.py`
+- `stormpad/views/settings.py`
+- `tests/test_exporter.py`
 
 Updated:
 
+- `HANDOFF.md`
+- `README.md`
+- `docs/architecture.md`
+- `docs/screenshots/README.md`
+- `docs/storage.md`
 - `stormpad/app.py`
-- `stormpad/errors.py`
+- `stormpad/block_parser.py`
+- `stormpad/blocks.py`
 - `stormpad/models.py`
-- `stormpad/paths.py`
 - `stormpad/preferences.py`
 - `stormpad/session.py`
 - `stormpad/storage.py`
-- `stormpad/theme.py`
 - `stormpad/uihelpers.py`
-- `stormpad/views/editor.py`
+- `stormpad/views/block_editor.py`
 - `stormpad/views/note_list.py`
 - `stormpad/window.py`
+- `tests/test_attachments.py`
+- `tests/test_blocks.py`
+- `tests/test_models.py`
 - `tests/test_preferences.py`
 - `tests/test_session.py`
 - `tests/test_storage.py`
 - `tests/test_uihelpers.py`
-- `README.md`
-- `PRD.md`
-- `docs/architecture.md`
-- `docs/screenshots/README.md`
-- `HANDOFF.md`
 
-## Automated verification
-
-Final available checks:
+## Final automated verification
 
 ```text
-./scripts/test.sh
-188 passed
+./scripts/test.sh -q
+233 passed
 
 ./.venv/bin/ruff check .
-All checks passed
+All checks passed!
 
-python -m compileall -q stormpad tests
+python -m compileall -q stormpad scripts tests
 passed
 
 headless imports
 passed
 
-all three theme objects
+AppKit imports
 passed
 
-AppKit module imports
+all three theme objects
 passed
 
 python -m stormpad --self-check
 StormPad 0.1.0 self-check OK
+
+isolated python -m stormpad --smoke
+SMOKE OK
+
+python scripts/native_interaction_smoke.py
+NATIVE INTERACTION SMOKE OK: menus, swatches, settings, insert, drag,
+transcript, undo, redo, autosave, reload
 ```
 
-Tests cover stable ID creation/migration, legacy aliases, filenames and
-collisions/failure rollback, all blocks and inline formats, unsafe color/HTML
-handling, attachments and rename stability, transcript visibility/collapse,
-preferences, selected-row/title/block-menu/formatting UI helpers, autosave
-stale-selection safety, and all theme token sets.
+The 233 tests cover gutter geometry/hit/scroll state; all block commands and
+round trips; full-payload reorder; Transcript absent/empty/legacy/append/
+collapse/search/export behavior; filename sanitization/collision/failure and
+attachment stability; deterministic TXT output; preferences; menu/UI helpers;
+autosave stale-selection safety; and themes.
 
-## Manual/visual verification
+## Manual and visual verification
 
-Completed against isolated temporary notes:
+Completed with temporary sanitized note libraries and isolated
+`NSUserDefaults` suites:
 
-- baseline native app launch and `--smoke`;
-- populated Phase 5.1 native launch with no console traceback;
-- visibly strong selected note while the body held focus;
-- clean canvas with heading, bold/underline/color, to-dos, quote, divider, and
-  managed image preview;
-- attachment copy remained managed rather than source-path dependent;
-- a crash caused by an invalid custom selection rect was diagnosed from the
-  macOS crash report and fixed; the subsequent app remained stable.
+- native launch, self-check, and UI construction without final tracebacks;
+- pre-edit default-library smoke loaded the existing notes read-only;
+- dedicated gutter, headings/lists, populated and empty Transcript;
+- complete native block menu;
+- native insertion indicator;
+- contextual swatches after repairing the custom-menu crash;
+- Note Info and native TXT save panel;
+- expanded Light-theme Settings with all paths/actions;
+- collapsed Notes tab near the top;
+- Storm Blue, Light, and Deep Dark editor surfaces;
+- generated `/tmp/stormpad-phase511-export.txt` manually inspected for readable
+  content/timestamps and absence of metadata/internal markup.
 
-Inspected sanitized screenshot:
+The native interaction driver exercised actual AppKit action methods for menu
+construction/validation, inline formatting/swatches, block insert, drag drop,
+Transcript append/move/remove, undo/redo, autosave, and reload.
 
-```text
-/var/folders/z4/lznm_6tn1l3dc4sf7wm25d100000gn/T/codex-shot-2026-07-23_19-54-43.png
-```
+### Screenshot locations
 
-The final layout-offset change for the active-block gutter was made after the
-last successful capture. A subsequent native relaunch request was blocked by
-the execution environment's approval/usage limit, so that last adjustment and
-the remaining screenshot matrix were **not** visually re-verified. Do not claim
-otherwise.
+- `/tmp/stormpad-phase511-gutter-headings-lists.png`
+- `/tmp/stormpad-phase511-block-menu.png`
+- `/tmp/stormpad-phase511-drag-insertion.png`
+- `/tmp/stormpad-phase511-transcript-empty.png`
+- `/tmp/stormpad-phase511-color-swatches.png`
+- `/tmp/stormpad-phase511-note-info.png`
+- `/tmp/stormpad-phase511-txt-export-panel.png`
+- `/tmp/stormpad-phase511-settings-appearance.png`
+- `/tmp/stormpad-phase511-collapsed-notes.png`
+- `/tmp/stormpad-phase511-theme-light.png`
+- `/tmp/stormpad-phase511-theme-deep-dark.png`
 
-## Known limitations / review items
+See `docs/screenshots/README.md` for fixture/hook commands.
 
-- Block reordering uses the documented Move Up / Move Down menu fallback, not
-  true drag-and-drop.
-- The gutter follows the active block while the body is focused; proximity-only
-  pointer hover is not implemented.
-- The compact file presentation is an attributed native line rather than a
-  separate rounded card view.
-- Attributed to-do and transcript content is keyboard/screen-reader ordered,
-  but the to-do glyph is not a separate native accessibility element.
-- Search results are correct but per-match in-row highlighting remains deferred.
-- The final gutter scroll/coordinate adjustment, blank-note screen, collapsed
-  relaunch, contextual formatting toolbar, block menu, transcript collapse,
-  and Light/Deep Dark Phase 5.1 screens still require hands-on visual review.
-- Speech uses the system voice and has no voice/rate picker.
-- If a file is deleted externally while unsaved edits are active, autosave
-  recreates it rather than discarding the user's edits.
+## Known limitations and hands-on review boundary
 
-## Exact next task
+- Edge auto-scroll during a drag is not implemented. Ordinary vertical native
+  dragging/reordering is implemented.
+- The AppKit drag source/drop destination and insertion indicator were
+  exercised programmatically and visually, but a freehand physical mouse drag
+  of every practical block type still needs user review.
+- Deterministic hover rendering and pure pointer/scroll geometry were tested and
+  inspected; freehand pointer-leave and a long-note scroll should still be
+  confirmed by the user.
+- Open/Reveal routes, speech selectors, Copy Note, and Delete-to-Trash
+  preservation remain wired and covered by existing tests, but final Finder,
+  audible speech, and destructive Trash interactions were intentionally not
+  invoked during the sanitized screenshot pass.
+- Theme/collapse/hover preferences are tested for persistence. Final hands-on
+  Cmd+, quit/relaunch, and physical collapsed-panel relaunch remain recommended.
+- Search results are correct, including Transcript text, but per-match in-row
+  highlighting remains deferred.
+- Speech still uses the system voice and has no voice/rate picker.
 
-**Do not start Phase 6 yet.** First run the remaining Phase 5.1 manual review
-against a fresh temporary `STORMPAD_NOTES_DIR`:
+## Exact recommended hands-on retest
 
-1. verify the final gutter position at the first block and after scrolling;
-2. create a blank note, title/body transition, commit/rename it twice, and
-   relaunch to confirm stable selection;
-3. collapse/relaunch/expand the note-list panel;
-4. insert/reorder every block and exercise every inline format/shortcut;
-5. import image/file, delete the original source, Open/Reveal, and verify Trash
-   bundling on a disposable note;
-6. insert/append/collapse Transcript and verify normal notes remain clean;
-7. switch and inspect all three themes;
-8. verify Copy Note, Speak Selection, pending-edit quit, and an empty console;
-9. capture/inspect the sanitized screenshot matrix in
-   `docs/screenshots/README.md`.
+Use a disposable temporary `STORMPAD_NOTES_DIR` and isolated
+`STORMPAD_DEFAULTS_SUITE`:
 
-If that review passes, approve Phase 5.1 and only then begin Phase 6 using the
-hard delivery requirements at the top.
+1. Launch, confirm the existing/disposable library loads, and open a long note.
+2. Hover an empty block, paragraph, heading, and list; confirm `+`/drag controls
+   follow the pointer, never overlap text, disappear on leave, and stay aligned
+   after scrolling.
+3. Insert all 13 block types; verify empty conversion, below insertion, Option
+   insertion above, caret focus, undo/redo, and one block per click.
+4. Quit/relaunch and verify type/order/format persistence.
+5. Insert an empty Transcript, append twice, search its text, collapse/expand,
+   move/remove a chunk, undo, hide/remove the block, and verify data survives.
+6. Physically drag text, heading, list, checked to-do, link, image, file, and
+   Transcript blocks; verify insertion line, undo, relaunch order, and stable
+   attachment references.
+7. Open Note Info; compare filename/path to Finder. Perform a disposable manual
+   rename, change the title, and verify the manual filename and UUID remain.
+8. Export TXT from File and Note Info; inspect title, all blocks, link targets,
+   attachment names, and transcript timestamps; confirm no metadata/UUID/
+   StormPad markup/path internals and no Markdown modification.
+9. Select text; test Cmd+B/I/U/K, text and highlight swatches, Default reset,
+   selected outlines, undo, and relaunch.
+10. Open Settings with Cmd+, switch all themes, toggle hover controls, use all
+    three Reveal actions, close/reopen Settings, quit/relaunch, and verify
+    persistence without duplicate windows.
+11. Collapse Notes, verify the arrow remains near the top, resize, quit/relaunch,
+    expand, and confirm the editor was never covered.
+12. Verify search, Copy Note, Open File, Reveal, Speak/Stop, and Delete to Trash
+    on disposable data while watching the console for tracebacks.
 
-## Development hooks
-
-- `STORMPAD_NOTES_DIR` — isolated notes directory
-- `STORMPAD_INITIAL_QUERY` — launch into search
-- `STORMPAD_THEME` — force initial development theme
-- `STORMPAD_FOCUS_EDITOR` — focus body after launch
-- `STORMPAD_EDITOR_SELECTION=location,length` — deterministic selection
-- `STORMPAD_SHOW_BLOCK_MENU=1` — open the insertion menu for capture
-- `python -m stormpad --smoke` — build the real UI without event loop
+If this review passes, approve Phase 5.1.1 and only then request Phase 6.
 
 ## Guardrails
 
-- Do not touch `/Users/mattferre/web/APP/wisperflow_`.
-- Do not add cloud, AI, accounts, telemetry, or speculative scope.
-- Do not alter the official logo source.
 - Keep Markdown and local managed files as the source of truth.
-- Do not push, create a remote, package, publish, or release without an explicit
-  next-phase request.
-
-## WisperFlow statement
+- Do not mass-rewrite notes merely by opening them.
+- Do not touch `/Users/mattferre/web/APP/wisperflow_`.
+- Do not add cloud, accounts, analytics, telemetry, AI, recording, or
+  speculative scope.
+- Do not alter the official logo source.
+- Do not push, create a remote, package, sign, notarize, publish, or release
+  without an explicit next-phase request.
 
 WisperFlow was untouched. No file under
 `/Users/mattferre/web/APP/wisperflow_` was read, modified, moved, or copied.
