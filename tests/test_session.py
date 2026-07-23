@@ -10,6 +10,7 @@ import pytest
 from stormpad import models
 from stormpad.errors import (
     EmptyTranscriptError,
+    FilenameRenameError,
     InvalidCategoryError,
     NoteNotFoundError,
 )
@@ -97,6 +98,7 @@ def test_append_one_transcript_block(store):
     assert len(reloaded.transcript) == 1
     assert reloaded.transcript[0].timestamp == "00:00:04"
     assert reloaded.transcript[0].text == "First chunk"
+    assert reloaded.transcript_visible is True
 
 
 def test_append_multiple_blocks_preserve_order(store):
@@ -214,3 +216,23 @@ def test_delete_stages_managed_attachments_with_note(tmp_path, clock):
     assert len(deleted_bundles) == 1
     assert not note.path.exists()
     assert not managed.exists()
+
+
+def test_rename_failure_preserves_saved_content_at_old_path(
+    store, monkeypatch
+):
+    note = store.create_note("Original")
+    old_path = note.path
+    note.title = "New title"
+    note.body = "The body was safely written."
+
+    def fail_commit(_note):
+        raise FilenameRenameError("rename failed")
+
+    monkeypatch.setattr("stormpad.storage.commit_title_filename", fail_commit)
+    with pytest.raises(FilenameRenameError, match="rename failed"):
+        store.save_note(note, commit_title=True)
+    assert old_path.exists()
+    reloaded = store.load_note(note.id)
+    assert reloaded.title == "New title"
+    assert reloaded.body == "The body was safely written."

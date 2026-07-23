@@ -18,6 +18,7 @@ from stormpad.blocks import (
     insert_block,
     move_block,
     next_block_after_return,
+    split_runs,
     toggle_todo,
 )
 
@@ -73,6 +74,13 @@ def test_block_insert_above_below_convert_and_reorder():
     assert converted.kind == BlockType.HEADING_2 and converted.text == "X"
     moved, index = move_block(above, 1, -1)
     assert index == 0 and [block.text for block in moved] == ["X", "A", "B"]
+
+
+def test_split_runs_preserves_overlapping_marks():
+    mark = InlineMark(MarkType.BOLD)
+    before, after = split_runs([InlineRun("StormPad", (mark,))], 5)
+    assert before == [InlineRun("Storm", (mark,))]
+    assert after == [InlineRun("Pad", (mark,))]
 
 
 def test_list_and_todo_keyboard_transitions():

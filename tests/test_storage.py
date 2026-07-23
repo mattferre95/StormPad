@@ -61,6 +61,7 @@ def test_empty_note_round_trip(tmp_path):
     assert parsed.body == ""
     assert parsed.transcript == []
     assert parsed == note
+    assert "## Transcript" not in text
 
 
 def test_multiline_body_preserved(tmp_path):
@@ -301,3 +302,32 @@ def test_commit_title_filename_failure_keeps_old_file(tmp_path, monkeypatch):
         storage.commit_title_filename(note)
     assert note.path == old
     assert old.exists()
+
+
+def test_transcript_visibility_and_collapse_metadata_round_trip(tmp_path):
+    note = make_note(
+        tmp_path,
+        transcript=[],
+        transcript_visible=True,
+        transcript_collapsed=True,
+    )
+    text = storage.serialize(note)
+    assert "Transcript-Block: collapsed" in text
+    assert "## Transcript" in text
+    parsed = storage.parse(text, path=note.path)
+    assert parsed.transcript_visible is True
+    assert parsed.transcript_collapsed is True
+
+
+def test_legacy_transcript_is_visible_without_new_metadata(tmp_path):
+    text = (
+        "# Session\n\n"
+        "Category: Sessions\n\n"
+        "## Notes\n\n"
+        "Body.\n\n"
+        "## Transcript\n\n"
+        "[00:00:04]\nA legacy chunk.\n"
+    )
+    parsed = storage.parse(text, path=tmp_path / "legacy.md")
+    assert parsed.transcript_visible is True
+    assert parsed.transcript[0].text == "A legacy chunk."

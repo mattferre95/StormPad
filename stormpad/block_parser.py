@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import html
 import re
+from urllib.parse import unquote
 
 from .blocks import (
     COLOR_TOKENS,
@@ -230,6 +231,7 @@ def parse_blocks(markdown: str) -> list[Block]:
         image = _IMAGE.match(line.strip())
         if image:
             alt, target = image.groups()
+            target = unquote(target)
             blocks.append(
                 Block(
                     kind=BlockType.IMAGE,
@@ -244,6 +246,7 @@ def parse_blocks(markdown: str) -> list[Block]:
         link = _LINK.match(line.strip())
         if link:
             title, target = link.groups()
+            target = unquote(target)
             kind = BlockType.FILE if _is_managed_attachment(target) else BlockType.LINK
             blocks.append(
                 Block(kind=kind, runs=parse_inline(title), target=target)

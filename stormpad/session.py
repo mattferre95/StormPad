@@ -205,7 +205,12 @@ class NoteStore:
         attachment_dir = note_attachment_dir(self._notes_dir, note.id)
         app_directory = self._notes_dir.parent
         app_directory.mkdir(parents=True, exist_ok=True)
-        stage = Path(tempfile.mkdtemp(prefix=".stormpad-trash-", dir=app_directory))
+        stage = Path(
+            tempfile.mkdtemp(
+                prefix=f"StormPad-{storage.slugify(note.title)}-",
+                dir=app_directory,
+            )
+        )
         staged_note = stage / "Notes" / path.name
         staged_attachments = stage / "Attachments" / note.id
         staged_note.parent.mkdir(parents=True, exist_ok=True)

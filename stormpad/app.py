@@ -52,13 +52,8 @@ def _build_menu(app, controller) -> None:
     add_item(file_menu, "New Note", "newNote:", "n", target=controller)
     add_item(file_menu, "Save", "saveNote:", "s", target=controller)
     file_menu.addItem_(NSMenuItem.separatorItem())
-    add_item(file_menu, "Copy Note", "copyNote:", "", target=controller)
-    add_item(file_menu, "Append Test Transcript", "appendTranscript:", "", target=controller)
-    file_menu.addItem_(NSMenuItem.separatorItem())
     add_item(file_menu, "Open File", "openFile:", "o", target=controller)
     add_item(file_menu, "Reveal in Finder", "revealInFinder:", "", target=controller)
-    file_menu.addItem_(NSMenuItem.separatorItem())
-    add_item(file_menu, "Delete Note", "deleteNote:", "", target=controller)
     file_menu.addItem_(NSMenuItem.separatorItem())
     add_item(file_menu, "Close Window", "performClose:", "w")
 
@@ -79,9 +74,27 @@ def _build_menu(app, controller) -> None:
     add_item(speech_menu, "Stop Speaking", "stopSpeaking:", "", target=controller)
     edit_menu.addItem_(speech_item)
 
+    # Note actions remain available without occupying the writing canvas.
+    note_menu = add_menu("Note")
+    add_item(note_menu, "Note Info…", "showNoteInfo:", "", target=controller)
+    add_item(note_menu, "Copy Note", "copyNote:", "", target=controller)
+    note_menu.addItem_(NSMenuItem.separatorItem())
+    add_item(note_menu, "Open File", "openFile:", "", target=controller)
+    add_item(note_menu, "Reveal in Finder", "revealInFinder:", "", target=controller)
+    note_menu.addItem_(NSMenuItem.separatorItem())
+    add_item(note_menu, "Delete Note", "deleteNote:", "", target=controller)
+
+    # Native formatting commands route into the active rich text selection.
+    format_menu = add_menu("Format")
+    add_item(format_menu, "Bold", "toggleBold:", "b", target=controller)
+    add_item(format_menu, "Italic", "toggleItalic:", "i", target=controller)
+    add_item(format_menu, "Underline", "toggleUnderline:", "u", target=controller)
+    add_item(format_menu, "Link…", "editLink:", "k", target=controller)
+
     # View menu.
     view_menu = add_menu("View")
     add_item(view_menu, "Focus Search", "focusSearch:", "f", target=controller)
+    add_item(view_menu, "Collapse / Expand Notes", "toggleNotesPanel:", "", target=controller)
     view_menu.addItem_(NSMenuItem.separatorItem())
     theme_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_("Theme", None, "")
     theme_menu = NSMenu.alloc().initWithTitle_("Theme")
@@ -94,6 +107,17 @@ def _build_menu(app, controller) -> None:
         entry.setRepresentedObject_(theme_id)  # checkmark managed by validateMenuItem_
         theme_menu.addItem_(entry)
     view_menu.addItem_(theme_item)
+
+    # The future voice-session seam stays available for development without
+    # presenting transcript appending as a primary end-user control.
+    development_menu = add_menu("Development")
+    add_item(
+        development_menu,
+        "Append Test Transcript",
+        "appendTranscript:",
+        "",
+        target=controller,
+    )
 
     app.setMainMenu_(main_menu)
 

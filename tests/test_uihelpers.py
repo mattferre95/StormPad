@@ -14,13 +14,18 @@ from stormpad.session import NoteStore
 from stormpad.uihelpers import (
     AutosaveController,
     SaveStatus,
+    add_block_menu_mode,
     choose_selected_note,
     copy_text,
     default_new_category,
     format_relative,
+    formatting_toolbar_visible,
     is_speakable,
     next_selection_after_delete,
+    note_row_is_selected,
     preview_text,
+    title_command_focus,
+    title_display_text,
     word_count,
 )
 
@@ -53,6 +58,11 @@ def test_preview_truncates():
     note = make_note(body="word " * 60)
     out = preview_text(note, max_len=40)
     assert len(out) <= 41 and out.endswith("…")
+
+
+def test_preview_hides_markdown_formatting():
+    note = make_note(body="## Direction\n\nA **bold** <u>thought</u>.")
+    assert preview_text(note) == "Direction A bold thought."
 
 
 def test_word_count():
@@ -235,6 +245,36 @@ def test_save_status_values():
     assert SaveStatus.SAVED.value == "Saved locally"
     assert SaveStatus.SAVING.value == "Saving…"
     assert SaveStatus.FAILED.value == "Save failed"
+
+
+# -- Phase 5.1 UI states ------------------------------------------------------
+
+
+def test_selected_row_state():
+    assert note_row_is_selected("n1", "n1") is True
+    assert note_row_is_selected("n1", "n2") is False
+
+
+def test_blank_title_and_title_body_transition():
+    note = make_note()
+    note.title = "Untitled Note"
+    assert title_display_text(note) == ""
+    note.body = "has content"
+    assert title_display_text(note) == "Untitled Note"
+    assert title_command_focus("insertNewline:") == "body"
+    assert title_command_focus("moveUp:") == "title"
+
+
+def test_add_block_menu_state():
+    assert add_block_menu_mode(current_empty=True, option_pressed=False) == "convert"
+    assert add_block_menu_mode(current_empty=False, option_pressed=False) == "below"
+    assert add_block_menu_mode(current_empty=False, option_pressed=True) == "above"
+
+
+def test_formatting_toolbar_state():
+    assert formatting_toolbar_visible(selection_length=4, editor_focused=True)
+    assert not formatting_toolbar_visible(selection_length=0, editor_focused=True)
+    assert not formatting_toolbar_visible(selection_length=4, editor_focused=False)
 
 
 # -- copy formatting -----------------------------------------------------------

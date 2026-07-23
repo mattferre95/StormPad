@@ -26,6 +26,8 @@ from AppKit import (
     NSImage,
     NSImageLeft,
     NSImageOnly,
+    NSModalResponseOK,
+    NSOpenPanel,
     NSPasteboard,
     NSPasteboardTypeString,
     NSSplitViewController,
@@ -46,7 +48,8 @@ from AppKit import (
 )
 from Foundation import NSURL, NSMakeRect, NSObject
 
-from . import paths
+from . import attachments, paths
+from .blocks import Block, BlockType, InlineRun
 from .defaults import UserDefaultsBackend
 from .errors import NoteNotFoundError, NotesDirectoryError, StorageError
 from .models import ALL_NOTES, CATEGORIES, now_local
@@ -102,7 +105,7 @@ class MainController(NSObject):
 
         self._category = self._prefs.last_category
         self._query = os.environ.get("STORMPAD_INITIAL_QUERY", "").strip()
-        self._current_id: str | None = None
+        self._current_id: str | None = self._prefs.last_note_id
         self._displayed: list = []
 
         self._autosave = AutosaveController(
@@ -116,6 +119,10 @@ class MainController(NSObject):
         self._build_window()
         self._ensure_ready()
         self._apply_filter()
+        if os.environ.get("STORMPAD_FOCUS_EDITOR"):
+            NSTimer.scheduledTimerWithTimeInterval_repeats_block_(
+                0.15, False, lambda timer: self._apply_editor_dev_focus()
+            )
         return self
 
     # -- assets --------------------------------------------------------------
@@ -220,26 +227,19 @@ class MainController(NSObject):
         pin_edges(header_line, root, top=_HEADER_HEIGHT, leading=0, trailing=0, bottom=None)
         set_height(header_line, 1)
 
-        copy_b = self._toolbar_button(
-            "Copy Note", "copyNote:", "doc.on.doc", tint=p.accent_strong
+        collapse_b = self._toolbar_button(
+            "Toggle Notes", "toggleNotesPanel:", "sidebar.right", icon_only=True
         )
-        append_b = self._toolbar_button("Append Transcript", "appendTranscript:", "waveform")
-        open_b = self._toolbar_button(
-            "Open File", "openFile:", "arrow.up.forward.square", icon_only=True
-        )
-        reveal_b = self._toolbar_button(
-            "Reveal in Finder", "revealInFinder:", "folder", icon_only=True
-        )
-        delete_b = self._toolbar_button(
-            "Delete Note", "deleteNote:", "trash", icon_only=True, tint=p.danger
+        info_b = self._toolbar_button(
+            "Note Info", "showNoteInfo:", "info.circle", icon_only=True
         )
         new_b = self._toolbar_button("New Note", "newNote:", "plus", primary=True)
-        self._action_buttons = [copy_b, append_b, open_b, reveal_b, delete_b]
+        self._action_buttons = [info_b]
 
         stack = NSStackView.alloc().init()
         stack.setOrientation_(NSUserInterfaceLayoutOrientationHorizontal)
         stack.setSpacing_(7.0)
-        for button in [copy_b, append_b, open_b, reveal_b, delete_b, new_b]:
+        for button in [collapse_b, info_b, new_b]:
             stack.addArrangedSubview_(button)
         add(header, stack)
         stack.trailingAnchor().constraintEqualToAnchor_constant_(
@@ -251,14 +251,16 @@ class MainController(NSObject):
         self._sidebar = Sidebar(
             self._palette, self._logo, on_category=self._on_category, search_delegate=self
         )
-        self._note_list = NoteList.alloc().initWithPalette_onSelect_(
-            self._palette, self._on_note_selected
+        self._note_list = NoteList.alloc().initWithPalette_onSelect_onCollapse_(
+            self._palette, self._on_note_selected, self._toggle_notes_panel
         )
-        self._editor = Editor.alloc().initWithPalette_onTitle_onBody_(
-            self._palette, self._on_title_edited, self._on_body_edited
+        self._editor = Editor.alloc().initWithPalette_onTitle_onBody_onAttachment_(
+            self._palette,
+            self._on_title_edited,
+            self._on_body_edited,
+            self._attachment_block,
         )
         self._editor.speech_target = self
-        self._editor.set_transcript_append_target(self, "appendTranscript:")
 
         editor_col = flipped_view()
         editor_col.setWantsLayer_(True)
@@ -280,6 +282,7 @@ class MainController(NSObject):
         list_item.setMinimumThickness_(260.0)
         list_item.setMaximumThickness_(440.0)
         list_item.setHoldingPriority_(250.0)
+        self._list_item = list_item
         editor_item = NSSplitViewItem.splitViewItemWithViewController_(_wrap(editor_col))
         editor_item.setMinimumThickness_(420.0)
         editor_item.setHoldingPriority_(200.0)
@@ -296,7 +299,7 @@ class MainController(NSObject):
 
         window.setContentView_(root)
         split.splitView().setPosition_ofDividerAtIndex_(_SIDEBAR_WIDTH, 0)
-        split.splitView().setPosition_ofDividerAtIndex_(_SIDEBAR_WIDTH + _LIST_WIDTH, 1)
+        self._apply_notes_panel_state()
 
     # -- timers (autosave scheduler) -----------------------------------------
 
@@ -310,6 +313,28 @@ class MainController(NSObject):
     def _cancel_timer(self, token):
         if token is not None:
             token.invalidate()
+
+    @objc.python_method
+    def _apply_editor_dev_focus(self) -> None:
+        """Sanitized screenshot hook; never enabled in a normal launch."""
+        if self._current_id is None:
+            return
+        self._editor.focus_body()
+        raw_selection = os.environ.get("STORMPAD_EDITOR_SELECTION", "")
+        if raw_selection:
+            try:
+                location, length = (
+                    int(part.strip()) for part in raw_selection.split(",", 1)
+                )
+                self._editor.restore_selection((location, length))
+            except (TypeError, ValueError):
+                pass
+        if os.environ.get("STORMPAD_SHOW_BLOCK_MENU"):
+            NSTimer.scheduledTimerWithTimeInterval_repeats_block_(
+                0.1,
+                False,
+                lambda timer: self._editor.showBlockMenu_(self._editor._plus),
+            )
 
     # -- data / filtering ----------------------------------------------------
 
@@ -434,14 +459,22 @@ class MainController(NSObject):
     def _perform_save(self) -> None:
         if self._current_id is None:
             return
-        note = self._displayed_by_id(self._current_id)
+        save_id = self._current_id
+        note = self._displayed_by_id(save_id)
         if note is None:
             return
         now = now_local()
-        note.set_title(self._editor.title_text(), now)
+        note.set_title(self._editor.title_text().strip() or "Untitled Note", now)
         note.set_body(self._editor.body_text(), now)
+        visible, collapsed = self._editor.transcript_state()
+        note.transcript_visible = visible or bool(note.transcript)
+        note.transcript_collapsed = collapsed
+        # A stale debounce callback must never write editor content into a note
+        # selected after this save began.
+        if self._current_id != save_id:
+            return
         try:
-            self._store.save_note(note)
+            self._store.save_note(note, commit_title=True)
         except StorageError as exc:
             self._editor.set_status(SaveStatus.FAILED)
             self._alert("Save failed", str(exc))
@@ -452,6 +485,7 @@ class MainController(NSObject):
             header="Results" if self._query else self._category,
             subtitle=self._note_list_subtitle(),
         )
+        self._note_list.select_note_id(save_id, notify=False)
 
     @objc.python_method
     def _note_list_subtitle(self) -> str:
@@ -519,6 +553,99 @@ class MainController(NSObject):
             header="Results" if self._query else self._category,
             subtitle=self._note_list_subtitle(),
         )
+        self._note_list.select_note_id(note.id, notify=False)
+
+    @objc.IBAction
+    def toggleNotesPanel_(self, sender):  # noqa: N802
+        self._toggle_notes_panel()
+
+    @objc.python_method
+    def _toggle_notes_panel(self) -> None:
+        self._prefs.notes_list_collapsed = not self._prefs.notes_list_collapsed
+        self._apply_notes_panel_state()
+
+    @objc.python_method
+    def _apply_notes_panel_state(self) -> None:
+        collapsed = self._prefs.notes_list_collapsed
+        self._note_list.set_collapsed(collapsed)
+        width = 46.0 if collapsed else _LIST_WIDTH
+        self._list_item.setMinimumThickness_(width if collapsed else 260.0)
+        self._list_item.setMaximumThickness_(width if collapsed else 440.0)
+        self._split_vc.splitView().setPosition_ofDividerAtIndex_(
+            _SIDEBAR_WIDTH + width, 1
+        )
+
+    @objc.python_method
+    def _attachment_block(self, kind: str, source: Path | None):
+        note = self._selected_note_or_none()
+        if note is None:
+            return None
+        selected = source
+        if selected is None:
+            panel = NSOpenPanel.openPanel()
+            panel.setCanChooseFiles_(True)
+            panel.setCanChooseDirectories_(False)
+            panel.setAllowsMultipleSelection_(False)
+            panel.setMessage_(
+                "Choose an image" if kind == BlockType.IMAGE.value else "Choose a file"
+            )
+            if panel.runModal() != NSModalResponseOK:
+                return None
+            selected = Path(str(panel.URL().path()))
+        try:
+            managed = attachments.import_attachment(
+                selected, self._store.notes_dir, note.id
+            )
+        except StorageError as exc:
+            self._alert("Could not import attachment", str(exc))
+            return None
+        relative = attachments.relative_markdown_path(note.path, managed)
+        if kind == BlockType.IMAGE.value:
+            alt = managed.stem.replace("-", " ").replace("_", " ").strip()
+            return Block(
+                kind=BlockType.IMAGE,
+                runs=[InlineRun(alt)],
+                alt=alt,
+                target=relative,
+            )
+        return Block(
+            kind=BlockType.FILE,
+            runs=[InlineRun(managed.name)],
+            target=relative,
+        )
+
+    @objc.IBAction
+    def showNoteInfo_(self, sender):  # noqa: N802
+        note = self._selected_note_or_none()
+        if note is None:
+            return
+        alert = NSAlert.alloc().init()
+        alert.setMessageText_(note.title or "Untitled Note")
+        alert.setInformativeText_(
+            f"Filename: {note.path.name}\n"
+            f"Category: {note.category}\n"
+            f"Created: {note.created_at.isoformat(sep=' ')}\n"
+            f"Updated: {note.updated_at.isoformat(sep=' ')}\n"
+            f"ID: {note.id}"
+        )
+        alert.addButtonWithTitle_("OK")
+        alert.runModal()
+
+    @objc.IBAction
+    def toggleBold_(self, sender):  # noqa: N802
+        self._editor.toggleBold_(sender)
+
+    @objc.IBAction
+    def toggleItalic_(self, sender):  # noqa: N802
+        self._editor.toggleItalic_(sender)
+
+    @objc.IBAction
+    def toggleUnderline_(self, sender):  # noqa: N802
+        self._editor.toggleUnderline_(sender)
+
+    @objc.IBAction
+    def editLink_(self, sender):  # noqa: N802
+        self._editor.editLink_(sender)
 
     @objc.IBAction
     def openFile_(self, sender):  # noqa: N802
@@ -610,6 +737,7 @@ class MainController(NSObject):
             "openFile:",
             "revealInFinder:",
             "deleteNote:",
+            "showNoteInfo:",
         )
         if name in note_actions:
             return self._current_id is not None
@@ -617,6 +745,8 @@ class MainController(NSObject):
             return is_speakable(self._editor.selected_body_text())
         if name == "stopSpeaking:":
             return self._speech.is_speaking
+        if name in ("toggleBold:", "toggleItalic:", "toggleUnderline:", "editLink:"):
+            return bool(self._editor.selected_body_text())
         if name == "selectTheme:":
             item.setState_(menu_state(item.representedObject(), self._theme.id))
             return True

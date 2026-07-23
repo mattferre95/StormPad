@@ -11,8 +11,10 @@ from collections.abc import Callable
 import objc
 from AppKit import (
     NSBezierPath,
+    NSButton,
     NSFont,
     NSGraphicsContext,
+    NSImageOnly,
     NSInsetRect,
     NSNoBorder,
     NSScrollView,
@@ -20,16 +22,16 @@ from AppKit import (
     NSTableColumn,
     NSTableRowView,
     NSTableView,
-    NSTableViewSelectionHighlightStyleNone,
+    NSTableViewSelectionHighlightStyleRegular,
     NSView,
 )
-from Foundation import NSIndexSet, NSObject
+from Foundation import NSIndexSet, NSMakeRect, NSObject
 
 from ..models import ALL_NOTES, Note, now_local
 from ..uihelpers import format_relative, preview_text
 from .controls import FlippedView, flipped_view, label, rounded_view, solid_view
 from .layout import add, pin_edges, set_height, set_width
-from .palette import Palette
+from .palette import Palette, symbol_image
 
 
 class _ThemedRowView(NSTableRowView):
@@ -65,20 +67,35 @@ class _ThemedRowView(NSTableRowView):
         p.selected_border.set()
         path.setLineWidth_(1.0)
         path.stroke()
+        indicator_rect = NSMakeRect(
+            float(inset.origin.x) + 2.0,
+            float(inset.origin.y) + 12.0,
+            4.0,
+            max(4.0, float(inset.size.height) - 24.0),
+        )
+        indicator = NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(
+            indicator_rect, 2.0, 2.0
+        )
+        p.accent_strong.set()
+        indicator.fill()
 
 
 class NoteList(NSObject):
     """Table of notes; also its own data source & delegate."""
 
-    def initWithPalette_onSelect_(self, palette, on_select):  # noqa: N802
+    def initWithPalette_onSelect_onCollapse_(  # noqa: N802
+        self, palette, on_select, on_collapse
+    ):
         self = objc.super(NoteList, self).init()
         if self is None:
             return None
         self._palette: Palette = palette
         self._on_select: Callable[[str | None], None] = on_select
+        self._on_collapse: Callable[[], None] = on_collapse
         self._notes: list[Note] = []
         self._selected_id: str | None = None
         self._suppress = False
+        self._collapsed = False
         self._build()
         return self
 
@@ -95,17 +112,33 @@ class NoteList(NSObject):
         self._subtitle = add(self.view, label("", NSFont.systemFontOfSize_(11.5), p.text_muted))
         pin_edges(self._subtitle, self.view, top=80, leading=20, trailing=20, bottom=None)
 
+        collapse = NSButton.alloc().init()
+        collapse.setBordered_(False)
+        collapse.setImagePosition_(NSImageOnly)
+        collapse.setImage_(symbol_image("sidebar.right", size=12, weight="semibold"))
+        collapse.setContentTintColor_(p.text_muted)
+        collapse.setTarget_(self)
+        collapse.setAction_("toggleCollapse:")
+        collapse.setToolTip_("Collapse Notes")
+        collapse.setAccessibilityLabel_("Collapse Notes")
+        add(self.view, collapse)
+        pin_edges(collapse, self.view, top=52, leading=None, trailing=14, bottom=None)
+        set_width(collapse, 28)
+        set_height(collapse, 28)
+        self._collapse_button = collapse
+
         scroll = add(self.view, NSScrollView.alloc().init())
         scroll.setDrawsBackground_(False)
         scroll.setBorderType_(NSNoBorder)
         scroll.setHasVerticalScroller_(True)
+        scroll.setAutohidesScrollers_(True)
         pin_edges(scroll, self.view, top=104, leading=0, trailing=0, bottom=0)
 
         table = NSTableView.alloc().init()
         table.setBackgroundColor_(p.note_list_background)
         table.setHeaderView_(None)
         table.setRowHeight_(78.0)
-        table.setSelectionHighlightStyle_(NSTableViewSelectionHighlightStyleNone)
+        table.setSelectionHighlightStyle_(NSTableViewSelectionHighlightStyleRegular)
         table.setIntercellSpacing_((0.0, 2.0))
         table.setDataSource_(self)
         table.setDelegate_(self)
@@ -114,6 +147,21 @@ class NoteList(NSObject):
         table.addTableColumn_(column)
         scroll.setDocumentView_(table)
         self._table = table
+        self._scroll = scroll
+
+        tab = NSButton.alloc().init()
+        tab.setBordered_(False)
+        tab.setImagePosition_(NSImageOnly)
+        tab.setImage_(symbol_image("list.bullet", size=15, weight="semibold"))
+        tab.setContentTintColor_(p.text_secondary)
+        tab.setTarget_(self)
+        tab.setAction_("toggleCollapse:")
+        tab.setToolTip_("Expand Notes")
+        tab.setAccessibilityLabel_("Expand Notes")
+        add(self.view, tab)
+        pin_edges(tab, self.view, top=16, leading=6, trailing=6, bottom=16)
+        tab.setHidden_(True)
+        self._collapsed_tab = tab
 
     # -- public API ----------------------------------------------------------
 
@@ -122,9 +170,26 @@ class NoteList(NSObject):
         self._notes = notes
         self._header.setStringValue_(header)
         self._subtitle.setStringValue_(subtitle)
+        self._collapsed_tab.setTitle_(str(len(notes)))
         self._table.reloadData()
         if self._selected_id is not None:
             self.select_note_id(self._selected_id, notify=False)
+
+    @objc.python_method
+    def set_collapsed(self, collapsed: bool) -> None:
+        self._collapsed = bool(collapsed)
+        for view in (
+            self._header,
+            self._subtitle,
+            self._collapse_button,
+            self._scroll,
+        ):
+            view.setHidden_(self._collapsed)
+        self._collapsed_tab.setHidden_(not self._collapsed)
+
+    @objc.IBAction
+    def toggleCollapse_(self, sender):  # noqa: N802
+        self._on_collapse()
 
     @objc.python_method
     def select_note_id(self, note_id: str | None, *, notify: bool = True) -> None:
@@ -174,8 +239,18 @@ class NoteList(NSObject):
         p = self._palette
         cell: FlippedView = flipped_view()
 
+        selected = note.id == self._selected_id
         title = add(
-            cell, label(note.title or "Untitled Note", NSFont.systemFontOfSize_(14), p.text_primary)
+            cell,
+            label(
+                note.title or "Untitled Note",
+                (
+                    NSFont.boldSystemFontOfSize_(14)
+                    if selected
+                    else NSFont.systemFontOfSize_(14)
+                ),
+                p.text_primary,
+            ),
         )
         pin_edges(title, cell, top=12, leading=16, trailing=16, bottom=None)
 

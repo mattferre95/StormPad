@@ -11,6 +11,8 @@ from collections.abc import Callable
 from datetime import datetime
 from enum import StrEnum
 
+from .block_parser import parse_blocks
+from .blocks import BlockType
 from .models import CATEGORIES, DEFAULT_CATEGORY, Note
 
 
@@ -29,7 +31,16 @@ def preview_text(note: Note, *, max_len: int = 140) -> str:
     excludes the title/Created/Updated/Category lines and the section headers,
     which live outside ``note.body``).
     """
-    collapsed = " ".join(note.body.split())
+    blocks = parse_blocks(note.body)
+    visible = []
+    for block in blocks:
+        if block.kind in (BlockType.DIVIDER, BlockType.TRANSCRIPT):
+            continue
+        if block.kind == BlockType.RAW:
+            visible.append(block.raw or "")
+        else:
+            visible.append(block.text or block.alt or "")
+    collapsed = " ".join(" ".join(visible).split())
     if len(collapsed) <= max_len:
         return collapsed
     return collapsed[:max_len].rstrip() + "…"
@@ -49,7 +60,16 @@ def copy_text(note: Note) -> str:
     """
     parts: list[str] = [note.title or "Untitled Note"]
     if note.body.strip():
-        parts.append(note.body.rstrip())
+        blocks = parse_blocks(note.body)
+        visible_body = "\n".join(
+            (block.raw or "")
+            if block.kind == BlockType.RAW
+            else block.text
+            for block in blocks
+            if block.kind not in (BlockType.DIVIDER, BlockType.TRANSCRIPT)
+        ).strip()
+        if visible_body:
+            parts.append(visible_body)
     if note.transcript:
         block_lines = ["Transcript"]
         for block in note.transcript:
@@ -73,6 +93,32 @@ def next_selection_after_delete(displayed: list[Note], deleted_id: str) -> str |
 def is_speakable(text: str | None) -> bool:
     """True if ``text`` has non-whitespace content worth speaking."""
     return bool(text and text.strip())
+
+
+def title_display_text(note: Note) -> str:
+    """Blank placeholder-facing title for a pristine new note."""
+    if note.title == "Untitled Note" and not note.body.strip() and not note.transcript:
+        return ""
+    return note.title
+
+
+def note_row_is_selected(note_id: str, selected_id: str | None) -> bool:
+    return note_id == selected_id
+
+
+def title_command_focus(selector: str) -> str:
+    """Focus destination for a title command (headlessly testable)."""
+    return "body" if selector == "insertNewline:" else "title"
+
+
+def add_block_menu_mode(*, current_empty: bool, option_pressed: bool) -> str:
+    if current_empty:
+        return "convert"
+    return "above" if option_pressed else "below"
+
+
+def formatting_toolbar_visible(*, selection_length: int, editor_focused: bool) -> bool:
+    return editor_focused and selection_length > 0
 
 
 def status_style(status: SaveStatus) -> tuple[str, str, str]:

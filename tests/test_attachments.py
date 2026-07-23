@@ -6,6 +6,7 @@ import pytest
 
 from stormpad import attachments
 from stormpad.errors import StorageError
+from stormpad.session import NoteStore
 
 NOTE_ID = "d746bb5e-4b34-4bf9-a23e-1d98f69b1475"
 
@@ -76,3 +77,17 @@ def test_record_orphan_does_not_delete_attachment(tmp_path):
     attachments.record_orphan(notes, NOTE_ID, relative)
     assert managed.exists()
     assert relative in (managed.parent / ".orphans.json").read_text(encoding="utf-8")
+
+
+def test_note_filename_rename_does_not_break_attachment_link(tmp_path):
+    store = NoteStore(tmp_path / "StormPad" / "Notes")
+    note = store.create_note("Before")
+    source = tmp_path / "brief.pdf"
+    source.write_bytes(b"pdf")
+    managed = attachments.import_attachment(source, store.notes_dir, note.id)
+    relative = attachments.relative_markdown_path(note.path, managed)
+    store.update_body(note.id, f"[brief.pdf]({relative})")
+    renamed = store.update_title(note.id, "After")
+    assert renamed.path.name == "after.md"
+    assert (renamed.path.parent / relative).resolve() == managed.resolve()
+    assert managed.exists()

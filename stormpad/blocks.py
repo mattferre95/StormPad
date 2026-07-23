@@ -89,6 +89,28 @@ def coalesce_runs(runs: list[InlineRun]) -> list[InlineRun]:
     return result
 
 
+def split_runs(
+    runs: list[InlineRun], offset: int
+) -> tuple[list[InlineRun], list[InlineRun]]:
+    """Split inline runs at a plain-text offset while retaining all marks."""
+    offset = max(0, offset)
+    before: list[InlineRun] = []
+    after: list[InlineRun] = []
+    consumed = 0
+    for run in runs:
+        run_end = consumed + len(run.text)
+        if run_end <= offset:
+            before.append(run)
+        elif consumed >= offset:
+            after.append(run)
+        else:
+            cut = offset - consumed
+            before.append(InlineRun(run.text[:cut], run.marks))
+            after.append(InlineRun(run.text[cut:], run.marks))
+        consumed = run_end
+    return coalesce_runs(before), coalesce_runs(after)
+
+
 @dataclass
 class Block:
     kind: BlockType = BlockType.TEXT

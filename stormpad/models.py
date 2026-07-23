@@ -132,4 +132,6 @@ class Note:
 
     def add_transcript_block(self, block: TranscriptBlock, now: datetime) -> None:
         self.transcript.append(block)
+        self.transcript_visible = True
+        self.transcript_collapsed = False
         self.updated_at = now
