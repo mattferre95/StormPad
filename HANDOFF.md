@@ -33,14 +33,35 @@ design handoff.
 
 ## Current state
 
-- **Branch:** `main`
-- **Latest commit:** _see `git log -1` — Phase 5 visual fidelity / themes commit_
-- **Git status:** clean after the Phase 5 commit (supplied ZIPs, the raw PRD
+- **Branch:** `feature/notion-editor`
+- **Base commit:** `02c1513` — Phase 5 visual fidelity / themes
+- **Git status:** Phase 5.1 implementation in progress (supplied ZIPs, the raw PRD
   `.txt`, and the root logo original are git-ignored; cleaned copies are
   committed; no dev/test notes or screenshots committed — tests use `tmp_path`,
   manual runs use a temp dir via `STORMPAD_NOTES_DIR`).
-- **Phase complete:** Phase 5 (visual fidelity, three complete themes, live
-  theme switching; 134 tests passing, all headless).
+- **Phase complete:** Phase 5. Phase 5.1 Clean Block Editor Redesign is active.
+- **Verified Phase 5 baseline:** 134 tests pass; Ruff clean; compile and
+  headless imports pass; the native app launches against an isolated `/tmp`
+  notes directory with an empty console.
+
+## Phase 5.1 architecture decision
+
+The redesign uses one native rich `NSTextView` for body blocks with
+paragraph-level block attributes and semantic inline attributes. The title is a
+native `NSTextField` styled and keyboard-connected as the visual first block.
+Pure block/parser/serializer modules keep Markdown conversion headlessly
+testable. The active paragraph is the block selection; normal text selection
+remains AppKit-native. The `+` gutter uses one native block menu. The drag
+handle uses the documented Move Up / Move Down fallback for stability.
+
+Stable IDs are UUIDs stored as `ID:` Markdown metadata. Legacy files get a
+deterministic in-memory ID and write it only on their next real edit. Filenames
+are committed to collision-safe title slugs only after the current file is
+saved safely. Attachments live under
+`~/Documents/StormPad/Attachments/<stable-note-id>/`, and transcript content
+stays separate from editable body blocks. See `docs/architecture.md` for the
+full representation, autosave, undo, attachment, transcript, and migration
+design.
 
 ## Setup / run / test commands
 

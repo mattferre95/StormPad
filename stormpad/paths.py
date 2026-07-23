@@ -33,6 +33,11 @@ def notes_dir() -> Path:
     return app_dir() / NOTES_DIRNAME
 
 
+def attachments_dir() -> Path:
+    """Return the managed attachment root (not created on import)."""
+    return app_dir() / "Attachments"
+
+
 def resolve_notes_dir(override: Path | str | None = None) -> Path:
     """Return ``override`` (as a Path) if given, else the default notes dir.
 

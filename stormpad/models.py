@@ -91,8 +91,9 @@ class TranscriptBlock:
 class Note:
     """In-memory representation of a StormPad Markdown note.
 
-    ``id`` is the stable identity (the file's stem) and never changes when the
-    title is edited. ``path`` is where the note lives on disk.
+    ``id`` is a stable UUID stored in Markdown metadata and never changes when
+    the title or filename changes. ``legacy_id`` records a pre-Phase-5.1
+    filename stem so an old selected-note preference can migrate safely.
     """
 
     id: str
@@ -103,9 +104,16 @@ class Note:
     created_at: datetime
     updated_at: datetime
     transcript: list[TranscriptBlock] = field(default_factory=list)
+    metadata: dict[str, str] = field(default_factory=dict)
+    transcript_visible: bool = False
+    transcript_collapsed: bool = False
+    id_persisted: bool = field(default=True, compare=False)
+    legacy_id: str | None = field(default=None, compare=False)
 
     def __post_init__(self) -> None:
         validate_category(self.category)
+        if self.transcript:
+            self.transcript_visible = True
 
     # -- mutation helpers (each refreshes updated_at) --------------------------
 

@@ -47,3 +47,7 @@ class NoteNotFoundError(StorageError):
 
 class AtomicWriteError(StorageError):
     """An atomic write failed; the destination was left untouched."""
+
+
+class FilenameRenameError(StorageError):
+    """A title-based filename commit failed; the previous path remains valid."""

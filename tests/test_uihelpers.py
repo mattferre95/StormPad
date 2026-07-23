@@ -201,7 +201,16 @@ def test_editor_edits_map_to_model_and_persist(tmp_path):
     reloaded = store.load_note(note.id)
     assert reloaded.title == "Renamed in editor"
     assert reloaded.body == "Body typed\nin the editor."
-    assert reloaded.path == note.path  # filename stable
+    assert reloaded.path == note.path
+
+
+def test_selected_note_preference_survives_filename_rename(tmp_path):
+    store = NoteStore(tmp_path / "Notes")
+    note = store.create_note("Before")
+    stable_id = note.id
+    renamed = store.update_title(stable_id, "After")
+    assert renamed.path.name == "after.md"
+    assert choose_selected_note(store.list_notes(), stable_id).id == stable_id
 
 
 def test_deleted_selected_note_load_raises(tmp_path):

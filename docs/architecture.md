@@ -10,6 +10,95 @@
   code never references color literals.
 - **Small, focused modules.** No giant controller/view files.
 
+## Phase 5.1 block-editor architecture
+
+Phase 5.1 replaces the dashboard-style body editor with a native, page-like
+block editor. The implementation remains AppKit-only: there is no web view,
+HTML contenteditable surface, browser JavaScript, React, or Electron.
+
+### Block representation
+
+`stormpad/blocks.py` defines the AppKit-free block and inline-mark model.
+`stormpad/block_parser.py` and `stormpad/block_serializer.py` convert between
+that model and the human-readable Markdown stored inside `## Notes`. Supported
+paragraph blocks are text, three heading levels, to-do, bullet, numbered list,
+quote, divider, link, image, file, and transcript. Unknown Markdown is retained
+as a raw preservation block instead of being discarded.
+
+Inline formatting is semantic rather than theme-colored. Runs carry bold,
+italic, underline, link, StormPad text-color, and StormPad highlight marks.
+Standard Markdown is used where it exists; underline and the curated color
+tokens use the documented, allow-listed StormPad HTML attributes. AppKit never
+executes that HTML.
+
+### Native editor and selection
+
+`stormpad/views/block_editor.py` owns one rich `NSTextView` for body blocks.
+Each paragraph carries a StormPad block-type attributed-string key; inline runs
+use native font/underline/link attributes plus semantic StormPad color keys.
+The title remains a native `NSTextField`, but spacing and keyboard transitions
+make it the visual first block of one continuous writing page. The current
+paragraph is the block selection. Native text selection remains the inline
+selection, preserving standard editing, spellcheck, keyboard navigation, and
+the text system's undo manager.
+
+The gutter is an AppKit overlay positioned from the layout manager's bounding
+rectangle for the active paragraph. Its `+` button inserts or converts blocks
+through one native menu. The drag handle initially exposes undoable Move Up /
+Move Down commands; this deliberately stable fallback is used instead of a
+fragile custom drag implementation.
+
+### Markdown conversion and autosave
+
+Loading parses `Note.body` into blocks and builds one attributed string.
+Editing converts attributed paragraphs back into the pure block model, then
+serializes deterministic Markdown into `Note.body`. The existing debounced
+autosave coordinator remains the only write scheduler. A save callback captures
+the selected stable note ID and refuses to write if selection changed before
+the callback runs. Formatting, block conversion/reordering, attachment
+insertion, and transcript visibility all enter the same autosave path.
+
+### Stable identity and filename commits
+
+StormPad metadata now includes `ID: <uuid>`. New notes receive a UUID once.
+Legacy files without an ID receive a deterministic UUID in memory and write it
+only on their next actual safe save; merely opening a legacy note does not
+rewrite it. `NoteStore` resolves notes by metadata ID rather than filename stem.
+
+The title is committed after the normal edit debounce, on Return from the
+title, on focus loss, or explicit save. Content is atomically saved to the
+current path first; only then is the file moved to a collision-free lowercase
+kebab filename. The `Note.id` never changes, and the model path changes only
+after a successful move.
+
+### Attachments
+
+`stormpad/attachments.py` manages local copies at
+`~/Documents/StormPad/Attachments/<stable-note-id>/`. Markdown stores relative
+links from `Notes/`, so title-based file renames do not affect attachments.
+Imports copy to a same-directory temporary file and atomically replace the
+final managed path. Removing a block records an orphan candidate and does not
+delete the managed file. Note deletion stages the Markdown file and its stable
+ID attachment directory together before handing the bundle to the configured
+Trash strategy.
+
+### Transcript representation
+
+Transcript chunks remain `Note.transcript`, separate from editable prose. A
+small StormPad Markdown marker records whether the optional transcript block is
+present and collapsed. The native editor renders timestamps and transcript
+text as a protected read-only region. Ordinary and newly created notes do not
+show the block until transcript content exists, the user inserts it, or the
+development append action creates it.
+
+### Migration from the Phase 1–5 editor
+
+Existing `# Title`, metadata, `## Notes`, and optional `## Transcript` files
+continue to load. Existing body Markdown is parsed into blocks; transcript
+chunks remain separate. No file is renamed and no metadata is injected merely
+because it was opened. The first subsequent user edit performs the safe ID
+migration and may adopt the title-derived filename.
+
 ## Layers
 
 ### Pure (AppKit-free, testable)

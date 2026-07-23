@@ -12,11 +12,15 @@ layer is testable against a temporary directory.
 from __future__ import annotations
 
 import os
+import shutil
+import tempfile
+import uuid
 from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
 
 from . import paths, storage
+from .attachments import note_attachment_dir
 from .errors import NoteNotFoundError
 from .models import (
     DEFAULT_CATEGORY,
@@ -37,8 +41,11 @@ _TEST_TRANSCRIPT_TEXT = (
 
 
 def permanent_delete(path: Path) -> None:
-    """Delete strategy that removes a file permanently (default; used in tests)."""
-    os.remove(path)
+    """Delete strategy that permanently removes a staged file or directory."""
+    if path.is_dir():
+        shutil.rmtree(path)
+    else:
+        os.remove(path)
 
 
 class NoteStore:
@@ -77,7 +84,11 @@ class NoteStore:
         return paths.ensure_notes_dir(self._notes_dir)
 
     def path_for(self, note_id: str) -> Path:
-        """Return the on-disk path for a note id."""
+        """Resolve a stable metadata ID (or legacy stem) to its current path."""
+        for path in storage.list_note_paths(self._notes_dir):
+            note = storage.read_note(path)
+            if note.id == note_id or note.legacy_id == note_id:
+                return path
         return self._notes_dir / f"{note_id}.md"
 
     # -- Create ---------------------------------------------------------------
@@ -87,10 +98,10 @@ class NoteStore:
         validate_category(category)
         self.ensure_dir()
         created = self._clock()
-        filename = storage.build_filename(created, storage.slugify(title))
+        filename = storage.build_filename(title)
         path = storage.unique_path(self._notes_dir, filename)
         note = Note(
-            id=path.stem,
+            id=str(uuid.uuid4()),
             path=path,
             title=title,
             body="",
@@ -109,7 +120,10 @@ class NoteStore:
         path = self.path_for(note_id)
         if not path.exists():
             raise NoteNotFoundError(f"note not found: {note_id}")
-        return storage.read_note(path)
+        note = storage.read_note(path)
+        if note.id != note_id and note.legacy_id != note_id:
+            raise NoteNotFoundError(f"note not found: {note_id}")
+        return note
 
     def list_notes(self) -> list[Note]:
         """Return all notes, most recently updated first."""
@@ -119,15 +133,18 @@ class NoteStore:
 
     # -- Update ---------------------------------------------------------------
 
-    def save_note(self, note: Note) -> None:
-        """Persist a note as-is (does not touch ``updated_at``)."""
+    def save_note(self, note: Note, *, commit_title: bool = False) -> None:
+        """Persist, then optionally commit a safe title-derived filename."""
         storage.write_note(note)
+        if commit_title:
+            storage.commit_title_filename(note)
 
     def update_title(self, note_id: str, title: str) -> Note:
-        """Update a note's title. The underlying filename is *not* changed."""
+        """Update a note title and commit its collision-safe filename."""
         note = self.load_note(note_id)
         note.set_title(title, self._clock())
         storage.write_note(note)
+        storage.commit_title_filename(note)
         return note
 
     def update_body(self, note_id: str, body: str) -> Note:
@@ -180,9 +197,32 @@ class NoteStore:
     # -- Delete ---------------------------------------------------------------
 
     def delete_note(self, note_id: str) -> Path:
-        """Delete a note via the configured strategy; return the removed path."""
+        """Stage note and attachments together, then invoke the delete strategy."""
         path = self.path_for(note_id)
         if not path.exists():
             raise NoteNotFoundError(f"note not found: {note_id}")
-        self._delete(path)
+        note = storage.read_note(path)
+        attachment_dir = note_attachment_dir(self._notes_dir, note.id)
+        app_directory = self._notes_dir.parent
+        app_directory.mkdir(parents=True, exist_ok=True)
+        stage = Path(tempfile.mkdtemp(prefix=".stormpad-trash-", dir=app_directory))
+        staged_note = stage / "Notes" / path.name
+        staged_attachments = stage / "Attachments" / note.id
+        staged_note.parent.mkdir(parents=True, exist_ok=True)
+        moved_attachments = False
+        try:
+            os.replace(path, staged_note)
+            if attachment_dir.exists():
+                staged_attachments.parent.mkdir(parents=True, exist_ok=True)
+                os.replace(attachment_dir, staged_attachments)
+                moved_attachments = True
+            self._delete(stage)
+        except Exception:
+            if moved_attachments and staged_attachments.exists():
+                attachment_dir.parent.mkdir(parents=True, exist_ok=True)
+                os.replace(staged_attachments, attachment_dir)
+            if staged_note.exists():
+                os.replace(staged_note, path)
+            shutil.rmtree(stage, ignore_errors=True)
+            raise
         return path

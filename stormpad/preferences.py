@@ -28,6 +28,7 @@ DEFAULT_THEME = STORM_BLUE
 _KEY_THEME = "theme"
 _KEY_LAST_NOTE = "last_note_id"
 _KEY_LAST_CATEGORY = "last_category"
+_KEY_NOTES_COLLAPSED = "notes_list_collapsed"
 
 
 class PreferencesBackend(Protocol):
@@ -105,3 +106,13 @@ class Preferences:
         if value != ALL_NOTES and value not in CATEGORIES:
             raise InvalidCategoryError(f"{value!r} is not a valid category")
         self._backend.set(_KEY_LAST_CATEGORY, value)
+
+    # -- Note-list column ----------------------------------------------------
+
+    @property
+    def notes_list_collapsed(self) -> bool:
+        return self._backend.get(_KEY_NOTES_COLLAPSED) == "true"
+
+    @notes_list_collapsed.setter
+    def notes_list_collapsed(self, value: bool) -> None:
+        self._backend.set(_KEY_NOTES_COLLAPSED, "true" if value else "false")

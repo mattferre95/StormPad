@@ -114,7 +114,7 @@ def choose_selected_note(notes: list[Note], saved_id: str | None) -> Note | None
     """
     if saved_id:
         for note in notes:
-            if note.id == saved_id:
+            if note.id == saved_id or note.legacy_id == saved_id:
                 return note
     return notes[0] if notes else None
 

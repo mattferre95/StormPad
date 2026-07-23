@@ -65,3 +65,13 @@ def test_last_category_roundtrip_and_validation():
 def test_invalid_stored_category_falls_back():
     backend = InMemoryBackend({"last_category": "garbage"})
     assert Preferences(backend).last_category == models.ALL_NOTES
+
+
+def test_note_list_collapse_persists():
+    backend = InMemoryBackend()
+    prefs = Preferences(backend)
+    assert prefs.notes_list_collapsed is False
+    prefs.notes_list_collapsed = True
+    assert Preferences(backend).notes_list_collapsed is True
+    prefs.notes_list_collapsed = False
+    assert Preferences(backend).notes_list_collapsed is False
