@@ -213,43 +213,76 @@ def test_double_clicking_project_icon_opens_picker_for_exact_project():
     assert row.cancelled is True
 
 
-def test_nested_note_selection_repaints_exactly_one_active_child():
-    from stormpad.views.sidebar import Sidebar
+def test_appkit_child_rows_clear_actual_surface_when_active_uuid_changes():
+    from AppKit import (
+        NSApplication,
+        NSBackingStoreBuffered,
+        NSBorderlessWindowMask,
+        NSColor,
+        NSEvent,
+        NSTextField,
+        NSWindow,
+    )
+    from Foundation import NSMakeRect
 
-    class ChildRow:
-        def __init__(self):
-            self.states = []
+    from stormpad.theme import get_theme
+    from stormpad.views.palette import Palette
+    from stormpad.views.sidebar import SidebarRow
 
-        def set_child_selected(self, selected, _palette):
-            self.states.append(bool(selected))
+    NSApplication.sharedApplication()
+    palette = Palette(get_theme(None))
+    pointer = NSEvent.mouseLocation()
+    window = NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
+        NSMakeRect(pointer.x - 20, pointer.y - 15, 240, 80),
+        NSBorderlessWindowMask,
+        NSBackingStoreBuffered,
+        False,
+    )
 
-    class ProjectRow:
-        def set_selected(self, selected, _palette):
-            self.selected = bool(selected)
+    def child(note_id: str, y: float):
+        row = SidebarRow.alloc().initWithKey_(note_id)
+        row._is_child_shortcut = True
+        row._palette = palette
+        row._name = NSTextField.alloc().init()
+        row._count = None
+        row._icon_is_symbol = False
+        row.setFrame_(NSMakeRect(0, y, 202, 30))
+        row.setWantsLayer_(True)
+        window.contentView().addSubview_(row)
+        return row
 
-    child_a = ChildRow()
-    child_b = ChildRow()
-    project = ProjectRow()
-    sidebar = type(
-        "SidebarState",
-        (),
-        {
-            "_rows": {"project": project, "A": child_a, "B": child_b},
-            "_note_rows": {"A": child_a, "B": child_b},
-            "_active_note_id": "A",
-            "_active_project_id": "project",
-            "_active_category": "All Notes",
-            "palette": object(),
-        },
-    )()
+    child_a = child("A", 0)
+    child_b = child("B", 40)
 
-    Sidebar._apply_selection(sidebar)
-    sidebar._active_note_id = "B"
-    Sidebar._apply_selection(sidebar)
+    def assert_inactive(row):
+        assert row._selected is False
+        assert row._hovered is False
+        assert row._drop_target is False
+        assert row._drag_lifted is False
+        assert row.backgroundColor().isEqual_(NSColor.clearColor())
+        assert float(row.layer().borderWidth()) == 0.0
+        assert not row.layer().animationKeys()
 
-    assert child_a.states == [True, False]
-    assert child_b.states == [False, True]
-    assert sum((child_a.states[-1], child_b.states[-1])) == 1
+    def assert_only_active(active, inactive):
+        assert active._selected is True
+        assert active.backgroundColor().isEqual_(palette.selected_background)
+        assert float(active.layer().borderWidth()) == 1.0
+        assert_inactive(inactive)
+        assert sum((child_a._selected, child_b._selected)) == 1
+
+    # A is under the real pointer, reproducing the old filled-hover path.
+    child_a.set_child_selected(True, palette)
+    child_b.set_child_selected(False, palette)
+    child_a.mouseEntered_(None)
+
+    child_a.set_child_selected(False, palette)
+    child_b.set_child_selected(True, palette)
+    assert_only_active(child_b, child_a)
+
+    child_b.set_child_selected(False, palette)
+    child_a.set_child_selected(True, palette)
+    assert_only_active(child_a, child_b)
+    window.close()
 
 
 def test_project_write_target_and_creation_use_exact_project(seeded):

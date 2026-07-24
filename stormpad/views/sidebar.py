@@ -202,6 +202,7 @@ class SidebarRow(FlippedView):
         self._mouse_down_point: tuple[float, float] | None = None
         self._single_click_timer = None
         self._hovered = False
+        self._is_child_shortcut = False
         self._action_controls: list[NSButton] = []
         self._palette: Palette | None = None
         self.on_select: Callable[[str], None] | None = None
@@ -400,10 +401,18 @@ class SidebarRow(FlippedView):
 
     def mouseEntered_(self, event):  # noqa: N802
         self._hovered = True
+        if self._is_child_shortcut:
+            if not self._selected and self._palette is not None:
+                self._name.setTextColor_(self._palette.text_primary)
+            return
         self._apply_surface()
 
     def mouseExited_(self, event):  # noqa: N802
         self._hovered = False
+        if self._is_child_shortcut:
+            if self._palette is not None:
+                self._apply_selection_text(self._selected, self._palette)
+            return
         self._apply_surface()
 
     def rightMouseDown_(self, event):  # noqa: N802
@@ -485,7 +494,7 @@ class SidebarRow(FlippedView):
             if emphasized
             else (
                 palette.hover_background
-                if self._hovered
+                if self._hovered and not self._is_child_shortcut
                 else NSColor.clearColor()
             )
         )
@@ -520,26 +529,22 @@ class SidebarRow(FlippedView):
         self._apply_selection_text(selected, palette)
 
     def set_child_selected(self, selected: bool, palette: Palette) -> None:
-        """Reset and synchronously repaint a nested navigation shortcut."""
+        """Synchronously reset and repaint a single-active child shortcut."""
         self._selected = bool(selected)
         self._palette = palette
         self._drop_target = False
         self._drag_lifted = False
-        self._hovered = self._pointer_is_inside()
+        self._drag_started = False
+        self._hovered = False
         self._emphasized = self._selected
         self._surface_applied = True
+        layer = self.layer()
+        layer.removeAllAnimations()
         self._paint_surface(self._selected)
+        # A previous implicit selection transition can otherwise remain in the
+        # presentation layer after the model layer has already become clear.
+        layer.removeAllAnimations()
         self._apply_selection_text(selected, palette)
-
-    @objc.python_method
-    def _pointer_is_inside(self) -> bool:
-        window = self.window()
-        if window is None:
-            return False
-        point = self.convertPoint_fromView_(
-            window.mouseLocationOutsideOfEventStream(), None
-        )
-        return bool(NSPointInRect(point, self.bounds()))
 
     @objc.python_method
     def _apply_selection_text(self, selected: bool, palette: Palette) -> None:
@@ -895,11 +900,16 @@ class Sidebar:
         row.rename_target = None
         row.drag_owner = self
         row.drag_kind = None
+        row._is_child_shortcut = True
         row._parent_project_id = note.project_id
         row._palette = self.palette
         row.setFrame_(NSMakeRect(16, y, 202, 30))
         row.setWantsLayer_(True)
         row.layer().setCornerRadius_(7.0)
+        row.layer().removeAllAnimations()
+        row.setBackgroundColor_(NSColor.clearColor())
+        row.layer().setBorderWidth_(0.0)
+        row.layer().setBorderColor_(NSColor.clearColor().CGColor())
         parent.addSubview_(row)
 
         name = label(
