@@ -53,8 +53,9 @@ telemetry, external AI services, or web views.
   surface, reloading the note list, and revealing hover controls — with every
   duration coming from one policy that honours macOS Reduce Motion.
 - A compact top-right native Share button plus File and Note menu commands.
-  Notes share as readable temporary TXT files through
-  `NSSharingServicePicker`; projects share as sanitized local ZIP packages.
+  Notes share as readable temporary TXT files through native macOS services
+  such as AirDrop, Messages, and Mail. AirDropped notes can then be brought
+  into Apple Notes on iPhone. Projects share as sanitized local ZIP packages.
 - Direct whole-row project reordering with persisted custom order, insertion
   feedback, undo/redo, and context-menu Move Up/Down alternatives.
 - Direct whole-row note dragging from the middle list onto Projects or
@@ -79,6 +80,15 @@ telemetry, external AI services, or web views.
 - Complete native application menus and a reusable Settings window for theme,
   the Add Block hover control, and local storage locations.
 - Storm Blue, Light, and Deep Dark themes with live switching.
+
+
+## Share from Mac to iPhone
+
+StormPad uses the native macOS Share menu. Send a note as a readable TXT file
+through AirDrop, Messages, or Mail. After AirDropping it to your iPhone, you
+can bring the received note into Apple Notes.
+
+This is a manual sharing flow, not automatic Apple Notes synchronization.
 
 ## Run
 
