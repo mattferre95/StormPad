@@ -114,6 +114,32 @@ python -m stormpad
 The test suite is headless and uses temporary directories. Native `--smoke`
 and visual launches require an active macOS display session.
 
+## Unsigned local packaging
+
+The initial Phase 6A package requires macOS 13 or later, Apple Silicon, and an
+arm64 Python 3.12 environment. Development continues to launch with
+`./scripts/run.sh`; release packaging uses a separate pinned environment:
+
+```bash
+python3.12 -m venv .release-venv
+./.release-venv/bin/python -m pip install -r requirements-release.txt
+STORMPAD_RELEASE_PYTHON=.release-venv/bin/python ./scripts/build_app.sh
+./.release-venv/bin/python scripts/verify_package.py
+./scripts/build_dmg.sh
+```
+
+The generated review artifacts are:
+
+```text
+dist/StormPad.app
+dist/StormPad-0.1.0.dmg
+```
+
+These artifacts are unsigned and not notarized. They are for local review and
+are not ready for public distribution. This first package supports arm64 only;
+it does not claim Intel support. Packaging does not move or copy user notes:
+they remain in `~/Documents/StormPad/`.
+
 ## Local storage
 
 ```text

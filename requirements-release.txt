@@ -1,0 +1,9 @@
+# Exact Phase 6A release-build environment.
+# Keep normal development dependencies in pyproject.toml; this file is only
+# for producing the reviewed macOS application and disk image artifacts.
+py2app==0.28.10
+setuptools==80.9.0
+wheel==0.45.1
+pyobjc-core==12.2.1
+pyobjc-framework-Cocoa==12.2.1
+pyobjc-framework-AVFoundation==12.2.1
