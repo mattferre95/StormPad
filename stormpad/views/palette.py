@@ -84,6 +84,40 @@ def symbol_image(name: str, *, size: float = 13.0, weight: str = "regular"):
     return result
 
 
+def menu_icon(name: str, color, *, size: float = 15.0, weight: str = "regular"):
+    """A colour-tinted SF Symbol for a native ``NSMenuItem`` image.
+
+    Native menus tint *template* images with the system label colour, so the
+    design's accent-tinted menu icons need a non-template image carrying its own
+    colour. This applies a hierarchical colour to the symbol and marks it
+    non-template so AppKit renders it as-is. Falls back gracefully (template,
+    system-tinted) when the colour API or the symbol is unavailable.
+    """
+    if not hasattr(NSImage, "imageWithSystemSymbolName_accessibilityDescription_"):
+        return None  # pragma: no cover
+    image = NSImage.imageWithSystemSymbolName_accessibilityDescription_(name, None)
+    if image is None:
+        return None
+    config = NSImageSymbolConfiguration.configurationWithPointSize_weight_scale_(
+        size, _weight(weight), NSImageSymbolScaleMedium
+    )
+    colored = color is not None and hasattr(
+        NSImageSymbolConfiguration, "configurationWithHierarchicalColor_"
+    )
+    if colored:
+        merged = config.configurationByApplyingConfiguration_(
+            NSImageSymbolConfiguration.configurationWithHierarchicalColor_(color)
+        )
+        if merged is not None:
+            config = merged
+    configured = image.imageWithSymbolConfiguration_(config)
+    result = configured if configured is not None else image
+    # A colour-carrying image must not be re-tinted by the menu; a fallback
+    # stays template so it still adapts to the system menu colour.
+    result.setTemplate_(not colored)
+    return result
+
+
 class Palette:
     """Semantic NSColors + fonts + effects derived from a :class:`Theme`."""
 

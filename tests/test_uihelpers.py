@@ -14,13 +14,24 @@ from stormpad.session import NoteStore
 from stormpad.uihelpers import (
     AutosaveController,
     SaveStatus,
+    add_block_menu_mode,
+    block_gutter_canvas_y,
+    block_gutter_layout,
+    block_index_for_location,
+    block_indices_for_selection,
     choose_selected_note,
     copy_text,
     default_new_category,
     format_relative,
+    formatting_toolbar_visible,
+    full_note_selection_ranges,
+    gutter_hover_hit,
     is_speakable,
     next_selection_after_delete,
+    note_row_is_selected,
     preview_text,
+    title_command_focus,
+    title_display_text,
     word_count,
 )
 
@@ -55,9 +66,26 @@ def test_preview_truncates():
     assert len(out) <= 41 and out.endswith("…")
 
 
+def test_preview_hides_markdown_formatting():
+    note = make_note(body="## Direction\n\nA **bold** <u>thought</u>.")
+    assert preview_text(note) == "Direction A bold thought."
+
+
 def test_word_count():
     assert word_count("") == 0
     assert word_count("one two   three\nfour") == 4
+
+
+def test_selection_maps_utf16_ranges_across_multiple_blocks():
+    native = "Alpha\nBéta 😀\nGamma"
+    assert block_indices_for_selection(native, 2, 13) == [0, 1, 2]
+    assert block_index_for_location(native, 13) == 1
+
+
+def test_full_note_selection_helper_covers_title_and_all_blocks():
+    title_range, body_range = full_note_selection_ranges("Storm 😀", "First\nSecond\nThird")
+    assert title_range == (0, 8)
+    assert body_range == (0, 18)
 
 
 # -- relative time -------------------------------------------------------------
@@ -201,7 +229,16 @@ def test_editor_edits_map_to_model_and_persist(tmp_path):
     reloaded = store.load_note(note.id)
     assert reloaded.title == "Renamed in editor"
     assert reloaded.body == "Body typed\nin the editor."
-    assert reloaded.path == note.path  # filename stable
+    assert reloaded.path == note.path
+
+
+def test_selected_note_preference_survives_filename_rename(tmp_path):
+    store = NoteStore(tmp_path / "Notes")
+    note = store.create_note("Before")
+    stable_id = note.id
+    renamed = store.update_title(stable_id, "After")
+    assert renamed.path.name == "after.md"
+    assert choose_selected_note(store.list_notes(), stable_id).id == stable_id
 
 
 def test_deleted_selected_note_load_raises(tmp_path):
@@ -226,6 +263,80 @@ def test_save_status_values():
     assert SaveStatus.SAVED.value == "Saved locally"
     assert SaveStatus.SAVING.value == "Saving…"
     assert SaveStatus.FAILED.value == "Save failed"
+
+
+# -- Phase 5.1 UI states ------------------------------------------------------
+
+
+def test_selected_row_state():
+    assert note_row_is_selected("n1", "n1") is True
+    assert note_row_is_selected("n1", "n2") is False
+
+
+def test_blank_title_and_title_body_transition():
+    note = make_note()
+    note.title = "Untitled Note"
+    assert title_display_text(note) == ""
+    note.body = "has content"
+    assert title_display_text(note) == "Untitled Note"
+    assert title_command_focus("insertNewline:") == "body"
+    assert title_command_focus("moveUp:") == "title"
+
+
+def test_add_block_menu_state():
+    assert add_block_menu_mode(current_empty=True, option_pressed=False) == "convert"
+    assert add_block_menu_mode(current_empty=False, option_pressed=False) == "below"
+    assert add_block_menu_mode(current_empty=False, option_pressed=True) == "above"
+
+
+@pytest.mark.parametrize("text_x", [72.0, 92.0, 160.0])
+def test_block_gutter_geometry_never_overlaps_text(text_x):
+    """Both gutter controls stay wholly outside the text column."""
+    layout = block_gutter_layout(text_x, 240.0)
+    assert layout.does_not_overlap_text
+    # The block-edit control is the inner one, nearest the text column.
+    assert layout.edit.max_x == text_x - layout.clearance
+    # The + sits to its left, and the two never overlap each other.
+    assert layout.add.max_x <= layout.edit.x
+    assert layout.controls_do_not_overlap
+    assert layout.add.y == layout.edit.y == 240.0
+
+
+def test_block_gutter_scroll_offset_mapping():
+    assert (
+        block_gutter_canvas_y(
+            scroll_origin_y=102,
+            text_inset_y=12,
+            block_origin_y=240,
+            scroll_offset_y=80,
+        )
+        == 274
+    )
+
+
+def test_gutter_hover_hit_testing_and_hidden_states():
+    values = dict(
+        gutter_width=92,
+        block_area_top=102,
+        block_area_bottom=600,
+    )
+    assert gutter_hover_hit(x=40, y=220, interactive=True, **values)
+    assert not gutter_hover_hit(x=100, y=220, interactive=True, **values)
+    assert not gutter_hover_hit(x=40, y=90, interactive=True, **values)
+    assert not gutter_hover_hit(x=40, y=220, interactive=False, **values)
+
+
+def test_block_index_resolves_explicit_hover_location():
+    native = "first\nsecond\nthird"
+    assert block_index_for_location(native, 0) == 0
+    assert block_index_for_location(native, 7) == 1
+    assert block_index_for_location(native, len(native)) == 2
+
+
+def test_formatting_toolbar_state():
+    assert formatting_toolbar_visible(selection_length=4, editor_focused=True)
+    assert not formatting_toolbar_visible(selection_length=0, editor_focused=True)
+    assert not formatting_toolbar_visible(selection_length=4, editor_focused=False)
 
 
 # -- copy formatting -----------------------------------------------------------

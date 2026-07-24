@@ -2,151 +2,341 @@
 
 ## Principles
 
-- **UI is separate from storage.** All non-UI logic imports without AppKit and
-  is unit-tested headlessly.
-- **Markdown files are the source of truth.** The app is a window over a folder
-  of `.md` files under `~/Documents/StormPad/Notes/`.
-- **Semantic theming.** Colors live only in `theme.py` as semantic tokens; view
-  code never references color literals.
-- **Small, focused modules.** No giant controller/view files.
+- StormPad is a native Python 3.12 + PyObjC/AppKit application. It does not use
+  a web view, HTML contenteditable, React, Electron, or browser JavaScript.
+- Markdown files are the source of truth. AppKit renders and edits a semantic
+  model; it does not replace the local files with a database.
+- Domain, storage, search, preferences, block conversion, and attachment
+  policies remain AppKit-free and are tested headlessly.
+- Views consume semantic tokens from `theme.py`; semantic inline colors are
+  stored as token names so changing theme never changes note content.
+- User data is changed only by an explicit create/edit/action. Loading a legacy
+  file does not rewrite or rename it.
+
+## Phase 5.1.2 stabilized editor and local Projects
+
+### Representation and selection
+
+`blocks.py` defines `Block`, `InlineRun`, and `InlineMark`. Required block types
+are text, Heading 1–3, to-do, bullet, numbered list, quote, divider, link,
+image, file, and transcript. Unknown fenced Markdown is represented as a
+protected raw block so it is not silently discarded.
+
+`views/block_editor.py` owns one rich native `NSTextView` for body blocks. A
+paragraph-level attributed-string key identifies each block and carries
+to-do/indent/target/collapse metadata. Native attributed runs carry bold,
+italic, underline, link, and semantic color/highlight keys. The active
+paragraph is the block selection; the normal `NSTextView` range is the inline
+selection.
+
+The title remains a native `NSTextField` in the model, but its typography and
+keyboard transitions make it the visual first block of the page. Return from
+the title focuses the first body paragraph; Up at the start of the body returns
+to the title. The placeholder `Untitled` is never saved as content. Editor-wide
+Cmd+A selects the visual title and the entire body, and one Delete clears both
+plus Transcript UI state as one undoable/autosaved mutation. Managed attachment
+files are preserved.
+
+### Block interaction and undo
+
+`GutterHoverView` is a dedicated transparent pointer tracker outside the text
+column. Pure `BlockGutterLayout` helpers model the text inset, gutter width,
+visible block rectangle, scroll offset, hit region, and control rectangles.
+Only the `+` appears beside the hovered semantic block. It remains left of the
+92-point text inset with explicit clearance, follows scrolling, and hides when
+the pointer leaves the block area. There is no block drag handle, drop target,
+insertion indicator, or Move Up/Down UI. The hover preference may hide `+`, but
+native Format commands remain available.
+
+`+` captures the body selection before opening its retained native menu. When
+text is selected, paragraph commands convert every intersecting paragraph in
+place and preserve the exact text/runs without inserting a duplicate. A
+collapsed selection converts a compatible empty text paragraph or inserts one
+structural block below the active paragraph (above with Option). Format ▸ Block
+Type uses the same selection-aware path. The caret or selection is restored and
+the mutation participates in native undo and autosave.
+
+Text typing uses the standard `NSTextView` undo manager. Structural and
+formatting operations snapshot the affected attributed content and register
+inverse operations with that same manager. All mutations call the existing
+body-edit callback and therefore share the autosave path.
+
+### Markdown conversion
+
+`block_parser.py` converts `Note.body` to semantic blocks and
+`block_serializer.py` writes deterministic, human-readable Markdown:
+
+- standard Markdown for headings, bold, italic, lists, to-dos, quotes,
+  dividers, links, images, and files;
+- `<u>` for underline;
+- allow-listed `<span data-stormpad-color="…">` and
+  `<span data-stormpad-highlight="…">` for curated semantic colors;
+- `<!-- stormpad:transcript collapsed="…">` for the optional transcript-block
+  placement/state marker.
+
+No Markdown or HTML is executed. Unsupported color values are treated as plain
+content, output is escaped, and only the curated token set is serialized.
+Supported `<u>` and semantic `<span>` tags may begin a normal paragraph; the
+parser distinguishes them from unsupported raw HTML so leading formatting
+survives relaunch.
+
+The selection toolbar uses standard native controls. Its text/highlight color
+menus pair semantic swatches with visible labels. `Clear` removes a text-color
+mark and restores the current theme foreground; `Clear / Transparent` removes
+highlight markup and native background color. Mixed selections report mixed
+state. Standard `NSMenuItem` surfaces preserve keyboard menu access, selection
+checks, and predictable AppKit drawing.
+
+### Autosave
+
+`AutosaveController` still owns the 0.4-second debounce. Title, body,
+formatting, block, attachment, and transcript-state changes all enter the same
+callback. Switching notes, closing, and quitting flush pending edits. The save
+callback captures the stable note ID and refuses to apply stale editor content
+to a newly selected note.
+
+The note is atomically written to its current path before a title-derived
+rename is attempted. If the rename fails, the valid, newly saved old file
+remains in place and the UI reports the failure.
+
+Return is a post-edit structural operation. `NSTextView` first applies the
+native selection replacement to current text storage; only then does the editor
+derive the next semantic block and rebuild its attributed representation. This
+prevents marked, rapid, Unicode, or pending-autosave text from being replaced by
+an older semantic snapshot. One document snapshot owns undo/redo for the
+structural step.
+
+## Stable identity and filename migration
+
+Every new note receives one UUID, stored as `ID: <uuid>` in Markdown metadata.
+Identity is independent of title and path. `NoteStore` resolves notes by the
+stored ID, and selection preferences store that ID.
+
+A legacy file without `ID` receives a deterministic UUIDv5 derived from its
+existing absolute path. This is an in-memory migration only: opening the file
+does not rewrite it. Its next real save persists the UUID. The legacy stem is
+temporarily retained as a lookup alias so an existing last-note preference can
+still resolve during migration.
+
+Safe title commits produce lowercase, Unicode-friendly kebab filenames.
+Reserved punctuation is removed, whitespace is normalized, an empty result
+uses `untitled-note.md`, and collisions use `-2`, `-3`, and so on. Existing
+files are not mass-renamed; a title filename is adopted on the next committed
+title/save.
+
+Note Info exposes the filename and current full path without adding permanent
+metadata to the writing canvas. An explicit manual rename is sanitized and
+collision-safe, keeps `.md`, preserves the UUID and attachment directory, and
+sets `Filename-Mode: manual`; later title saves no longer overwrite that manual
+choice. A failed move restores both the previous path and filename mode.
+
+## Attachments
+
+`attachments.py` stores managed local copies at:
+
+```text
+~/Documents/StormPad/
+├── Notes/
+│   ├── <unfiled-title-slug>.md
+│   └── Projects/<project-slug>/<filed-title-slug>.md
+└── Attachments/<stable-note-id>/<sanitized-filename>
+```
+
+An import copies to a temporary file inside the managed directory and then
+atomically moves it into place. Duplicate names receive numeric suffixes.
+Markdown stores paths relative to each note, and project moves retarget those
+references without moving the stable-ID attachment directory. Image blocks use
+native `NSTextAttachment` previews; file blocks show a native compact line with
+filename, type, and size and open through `NSWorkspace` on double-click.
+Context actions reveal or remove the block.
+
+Removing a block records its path in `.orphans.json` and does not delete the
+underlying file. Deleting a note stages the note and its stable-ID attachment
+directory together before passing the bundle to the configured Trash strategy;
+failure rolls both back.
+
+## Transcript
+
+Timestamped transcript chunks remain in `Note.transcript`, separate from
+editable body prose. The optional transcript marker only records block
+visibility and collapse state. The editor renders a semantically themed native
+container inside the note flow. Its heading/collapse control and empty-state
+`Append Test Transcript` action remain interactive while its multiline
+timestamp/text rows are protected read-only attributed content. Context actions
+can collapse/expand, append test data, remove chunks, or remove its marker;
+inverse chunk operations register with the editor undo manager. Further
+Transcript polish is deferred beyond Phase 5.1.2.
+
+A Transcript appears only when chunks exist, the user inserts the block, or
+Development ▸ Append Test Transcript is invoked. Removing/hiding the marker
+does not discard legacy chunks. Body search continues to include
+`Note.transcript`.
+
+No recording, live transcription, or WisperFlow integration exists in this
+phase.
+
+## Local Projects, note actions, TXT export, menus, and Settings
+
+Projects are real filesystem folders under `Notes/Projects/`, with one hidden
+`.stormpad-project.json` identity record in each folder. Notes remain ordinary
+Markdown and gain the known `Project-ID` metadata key while filed. `NoteStore`
+creates, loads, renames, and deletes projects; creates notes directly inside a
+project; and moves notes into or out of projects with collision-safe filenames.
+Project folder renames preserve project and note UUIDs. Managed attachment
+references are retargeted relative to the note's new folder while the stable
+attachment UUID and files remain unchanged.
+
+The sidebar exposes All Notes, Unfiled, and a collapsible Projects section above
+Categories. Project rows show folder icons and live counts. Project and note
+context menus provide create, rename, reveal, delete, move-to-project, and
+remove-from-project actions. Deleting a non-empty project never deletes its
+notes by default: the native confirmation path moves them to Unfiled first.
+Unknown legacy metadata is preserved, and root-level notes remain visible.
+
+The upper-right Note Info menu and the Note menu share the same current-note
+actions. Project, filename, path, dates, category, and word count are read from
+the selected stable-ID note after pending edits are flushed. Open, Reveal,
+Rename, Export, Settings, Move to Project, Remove from Project, and Delete
+operate on that current path.
+
+`exporter.py` is AppKit-free. It converts every semantic block and transcript
+chunk into readable UTF-8 text, strips Markdown/StormPad inline markup and
+storage metadata, renders to-dos as `[ ]`/`[x]`, and never writes back to the
+note. `window.py` wraps it in one native `NSSavePanel` and an atomic destination
+write.
+
+`app.py` constructs complete StormPad, File, Edit, Note, Format, View, Window,
+Help, and Development menus. Validation reflects selection, current block and
+inline formatting, panel state, theme, and enabled actions.
+
+`views/settings.py` owns one reusable window. Appearance changes theme
+immediately, Editor controls the persisted Add Block hover preference, and
+Storage shows the StormPad root/Notes/Attachments paths with separate Reveal
+actions.
+
+## Phase 5.1.3 native sharing and sidebar dragging
+
+### One sharing path
+
+The top-right `square.and.arrow.up` button, File ▸ Share Note…, Note ▸ Share
+Note…, Note Info, and note context menu all call the same controller action.
+Pending edits are flushed, the current note is reloaded by stable UUID, and
+`ShareExportManager` writes a human-readable TXT outside the Notes library.
+`NSSharingServicePicker` receives only the resulting file URL. StormPad does
+not pick a service, recipient, cloud destination, or public link.
+
+Project row context menus call the same manager with a stable project UUID.
+The manager stages a sanitized project tree and atomically replaces a
+collision-safe ZIP. It includes a local-export README, readable TXT and
+sanitized Markdown per note, and only referenced managed attachments.
+Attachment links are rewritten for the ZIP layout; identity metadata, project
+metadata files, preferences, caches, orphaned attachments, and absolute local
+paths are omitted. The originals are never rewritten.
+
+The share cache defaults to the system temporary directory under
+`StormPad/ShareExports`, never under Notes. Manager-owned artifacts older than
+24 hours are removed on launch and quit. Current exports remain long enough for
+the user-selected native service to read them.
+
+### UUID-only internal dragging
+
+`dragdrop.py` defines private project and note pasteboard types. Payloads
+contain a validated UUID, semantic kind, source project UUID/Unfiled, and source
+index; paths are never accepted from the pasteboard. Every drop resolves the
+UUID through the current `NoteStore`/project model and rejects missing,
+deleted, stale, malformed, or unsupported payloads.
+
+Custom project `SidebarRow` views make the icon, name, count, and empty row
+background one drag surface. A five-point threshold separates selection from
+dragging. Internal project drops only compute a new flat order—dropping on a
+project never nests it—and persist UUID order in Preferences without renaming
+folders. The UI shows a lifted row, insertion line, accessibility announcement,
+and near-edge autoscroll. Undo/redo and context-menu Move Project Up/Down use
+the same pure reorder operation.
+
+The middle `NSTableView` supplies native whole-row note dragging. Project and
+Unfiled rows are note destinations; All Notes, Categories, and the Projects
+header reject drops. Before a move, the controller flushes autosave and reloads
+the note/project by UUID. `NoteStore` performs the collision-safe filesystem
+move first, retargets managed attachment links, and only then refreshes
+selection, filters, search, counts, current paths, and preferences. The stable
+note UUID and attachment directory do not change. A failure leaves the prior
+file/content/membership valid; same-project drops are no-ops. Undo moves the
+note to its previous project or Unfiled location.
+
+Dragging an exported project ZIP to Finder is deliberately deferred. External
+dragging returns no operation so StormPad can never move a managed project
+folder out of its library. Block dragging inside the editor remains out of
+scope.
+
+## Phase 5.1.4 interaction and lifecycle repair
+
+`NSView.hitTest:` receives a point in the receiver's superview coordinate
+system. Sidebar rows convert that point to local bounds before accepting the
+whole row. The flipped navigation document also fills the scroll clip's height,
+so visible All Notes, Unfiled, Project, and Category rows are their true click
+and drop surfaces. Native table drag writers and private UUID payload validation
+remain unchanged.
+
+StormPad intentionally stays running after its last window closes. The
+controller therefore owns an `NSWindow` with `releasedWhenClosed` disabled;
+the application delegate's Dock-reopen callback can safely call `show()` on
+that same window after a real close cycle.
 
 ## Layers
 
-### Pure (AppKit-free, testable)
+### AppKit-free
 
 | Module | Responsibility |
 | --- | --- |
-| `errors.py` | Domain/storage exception hierarchy (input errors vs. storage failures). |
-| `paths.py` | Canonical app/notes directories; injectable override; explicit folder creation (no import-time side effects). |
-| `models.py` | `Note` / `TranscriptBlock`, categories, tz-aware timestamps, transcript-timestamp normalization. |
-| `storage.py` | Deterministic Markdown serialize; lenient parse; slug + stable filenames with collision handling; atomic writes; read/list. |
-| `session.py` | `NoteStore`: CRUD, `append_transcript_block(note_id, text, timestamp)`, `append_test_transcript`; injectable clock and delete strategy. |
-| `search.py` | Case-insensitive Unicode search over title/body/transcript + independent category filter; match spans for highlighting. |
-| `preferences.py` | Persisted theme + last-open note/category over an injectable backend (dict in tests, NSUserDefaults in the app), with safe fallbacks. |
-| `theme.py` | Storm Blue / Light / Deep Dark semantic token sets (Phase 5). |
+| `models.py` | Note/project/transcript structures, categories, timestamps, stable-ID state. |
+| `storage.py` | Note/project parsing/serialization, atomic writes, slugging, safe rename, legacy migration. |
+| `sharing.py` | Temporary readable note shares and atomic sanitized project ZIP packages. |
+| `dragdrop.py` | Private UUID drag payload validation and pure project reorder helpers. |
+| `blocks.py` | Semantic blocks/inline marks and pure structural operations. |
+| `block_parser.py` | Supported Markdown → semantic blocks. |
+| `block_serializer.py` | Semantic blocks → safe deterministic Markdown. |
+| `attachments.py` | Managed paths, atomic imports, collision policy, orphan manifest. |
+| `session.py` | Note/project CRUD, filing moves, transcript seam, note+attachment deletion policy. |
+| `exporter.py` | Semantic note → readable atomic UTF-8 TXT export. |
+| `paths.py` | Canonical/injectable local paths; no import-time creation. |
+| `search.py` | Unicode title/body/transcript search and category/project filtering. |
+| `preferences.py` | Theme, note/project selection, project order/collapse, note-list collapse, and Add Block preference. |
+| `theme.py` | Complete Storm Blue, Light, and Deep Dark semantic tokens. |
+| `uihelpers.py` | Pure previews, selection rules, autosave, and block UI-state helpers. |
 
-### Key seams (for testing and Phase 3/4)
-
-- `NoteStore(notes_dir=..., clock=..., delete_strategy=...)` — tests inject a
-  temp dir, a fake clock, and a recording delete strategy; Phase 4 injects a
-  "move to macOS Trash" strategy.
-- `PreferencesBackend` protocol (`get`/`set`/`delete`) — `InMemoryBackend` in
-  tests; an `NSUserDefaults` adapter in Phase 3.
-
-### Write-path vs. read-path validation
-
-User-facing APIs (model construction, `create_note`, `update_category`,
-preferences setters) validate strictly and raise. Parsing files off disk is
-**lenient**: malformed metadata falls back to safe defaults so a note's body is
-never lost.
-
-### AppKit (UI)
+### AppKit
 
 | Module | Responsibility |
 | --- | --- |
-| `app.py` | NSApplication lifecycle, delegate, main menu (Cmd+N/S/W/F + Edit), View → Theme menu. |
-| `window.py` | `MainController`: native window (transparent titlebar, full-size content, real traffic lights) + three-column `NSSplitViewController`; owns store/prefs/autosave/selection/search state. |
-| `defaults.py` | `UserDefaultsBackend` — NSUserDefaults adapter for the `PreferencesBackend` protocol. |
-| `uihelpers.py` | **Pure** controller helpers: preview text, word count, relative time, selection restoration, default category, `AutosaveController`. |
-| `views/palette.py` | Resolves semantic `Theme` tokens → `NSColor`/fonts. |
-| `views/layout.py` | Tiny Auto Layout helpers (pin edges, size). |
-| `views/sidebar.py` | Logo, tagline, search, Library categories + counts, privacy panel. |
-| `views/note_list.py` | `NSTableView` note rows (themed selection) + empty/search headers. |
-| `views/editor.py` | Serif title field + premium `NSTextView` body + metadata/save status + transcript section. |
-| `views/transcript.py` | Read-only timestamped transcript card (Append wired in Phase 4). |
-| `views/empty_state.py` | Empty / no-selection / no-results states. |
-| `views/controls.py` | Shared themed control builders (labels, flipped/solid views). |
+| `app.py` | Application lifecycle and complete native application menu bar. |
+| `window.py` | Window/split controller, autosave, project/note actions, validation, theme rebuild, Note Info/TXT. |
+| `defaults.py` | `NSUserDefaults` adapter for the preferences protocol. |
+| `views/block_editor.py` | Native title/body page, blocks, formatting toolbar, gutter, attachment rendering. |
+| `views/editor.py` | Compatibility re-export of the block editor. |
+| `views/note_list.py` | Themed persistent selection and collapsible middle column. |
+| `views/settings.py` | Reusable themed Settings window and storage reveal actions. |
+| `views/sidebar.py` | Search, Library, filesystem Projects, categories, counts, branding, privacy indicator. |
+| `views/palette.py` | Theme token → AppKit color/font/symbol resolution. |
+| `speech.py` | Isolated AVSpeechSynthesizer wrapper and lifecycle. |
 
-### UI layer (Phase 3)
+## Theme switching and note-list collapse
 
-**View hierarchy.** `MainController` builds an `NSWindow` (transparent titlebar
-+ full-size content view + real traffic lights) whose content is a header bar
-(New Note button) above an `NSSplitViewController` with three items — `Sidebar`,
-`NoteList`, and an editor column that stacks `Editor` and `EmptyState`. Split
-divider positions and the window frame persist via AppKit autosave names.
+Theme changes flush pending edits, rebuild the AppKit view tree from a new
+palette, reload the stable selected note, and restore body selection/focus.
+The middle note-list panel stores its collapsed state through `Preferences`.
+Expanded width is preserved by the split view; collapsed width is a 46-point
+tab that cannot cover the editor. The left-facing collapse arrow stays in the
+expanded header and the right-facing expand arrow stays near the top of the
+collapsed tab.
 
-**Theming.** Colors live only in `theme.py` (semantic hex tokens). `Palette`
-turns them into `NSColor`s; every view reads semantic names. Storm Blue is
-functional; Light/Deep Dark are token stubs for Phase 5.
+## Compatibility
 
-**Lifecycle.** `app.py` builds `NSApplication`, a delegate (reopen shows the
-window; terminate flushes pending edits), and the main menu. `python -m stormpad`
-runs it; `--self-check` and `--smoke` are display-independent runtime checks.
+Phase 1–5 files with `# Title`, metadata, `## Notes`, and optional
+`## Transcript` continue to load. Existing body content becomes blocks and
+transcript chunks remain separate. Root-level notes stay visible as Unfiled;
+project folders are discovered recursively. Unknown metadata is preserved. No
+file is renamed, assigned an on-disk ID/project, or otherwise migrated merely
+by being opened.
 
-**Autosave.** Editing marks the pure `AutosaveController` dirty and (re)starts a
-0.4s debounce backed by `NSTimer`. Firing (or an explicit flush on note switch /
-window close / quit) saves via the Phase 2 atomic write. Save status
-(`Saving…`/`Saved locally`/`Save failed`) reflects real state; the note list is
-not reordered mid-typing.
-
-**Search / category.** The sidebar search field and category rows feed
-`search.search_notes` / `filter_by_category`; results drive the list header,
-count, selection, and empty/results states. Category selection persists.
-
-**Preferences.** `Preferences` (domain, AppKit-free) runs over
-`UserDefaultsBackend`; theme, last note, and last category are restored on
-launch (selection falls back to the newest note, then the empty state).
-
-### Actions & speech (Phase 4)
-
-Actions live on `MainController` and are exposed on both the header toolbar and
-the File/Edit menus, validated by `validateMenuItem_` (and button enable/alpha):
-
-- **Copy Note** → `uihelpers.copy_text(note)` (title + body + transcript;
-  excludes path/Created/Updated/Category/ids/headers) to the general pasteboard.
-- **Append Test Transcript** → `NoteStore.append_test_transcript`; re-renders the
-  transcript section and refreshes the list, selection stable.
-- **Open File** → `NSWorkspace.openURL:` (default app); **Reveal** →
-  `activateFileViewerSelectingURLs:`.
-- **Delete** → confirmation `NSAlert` (Cancel is default/safe) → `NoteStore`'s
-  injected `trash_file` strategy (`NSFileManager trashItemAtURL:`); the note is
-  removed from the UI only after Trash succeeds, then the next note is selected.
-- Pending edits are flushed before Open/Reveal and on note-switch/close/quit;
-  a missing file is detected on these paths and recovered via a clear alert.
-
-**Speech** is isolated in `stormpad/speech.py`. `SpeechController` owns one
-backend (`AVSpeechBackend`, wrapping a strongly-retained `AVSpeechSynthesizer`
-from the top-level `AVFoundation` module), validates the selection, stops any
-current utterance before starting a new one, and is cleaned up on note switch /
-active-note delete / window close / quit. The editor augments — not replaces —
-the native `NSTextView` context menu via `textView:menu:forEvent:atIndex:`. The
-controller logic is unit-tested with an injected fake backend (no real audio).
-
-### Theming (Phase 5)
-
-`theme.py` is the single source of truth: a frozen `Theme` dataclass of ~50
-semantic tokens (hex strings) plus numeric decorative params (gradient/glow/
-shadow). Three first-class themes — **Storm Blue** (default), **Light**, **Deep
-Dark** — carry real handoff values. Because every field is required, a theme
-cannot be constructed with a missing token.
-
-`views/palette.py` resolves tokens to AppKit values dynamically (`palette.<token>`
-→ `NSColor`; numeric tokens pass through; a few legacy names are aliased) and
-provides fonts (SF Pro / New York / SF Mono), `window_gradient()`, `glow()`,
-`selection_glow()`, and `symbol_image()` (SF Symbols). **View code references
-semantic names only — never color literals.**
-
-**Live switching:** the window is built once; its content tree is built by
-`_install_content()`. `selectTheme:` flushes edits, captures the editor's
-selection + first-responder state, persists the `theme` preference, swaps the
-`Palette`, calls `_install_content()` again (a full rebuild → no stale colors),
-re-applies the filter (reloading the current note into the fresh editor), then
-restores the editor selection/focus. Each rebuild sets a per-theme
-`NSAppearance` (`darkAqua`/`aqua`) so native traffic lights, cursor, selection,
-and scrollbars match. Menu checkmarks are driven by `validateMenuItem_` +
-`theme.menu_state`. Storm Blue is the only theme with decorative glow
-(`glow_opacity`/`selected_shadow_opacity`).
-
-## Note Markdown format
-
-See PRD §12. A note has a title (`# ...`), `Created` / `Updated` / `Category`
-metadata, a `## Notes` body, and an optional `## Transcript` section of
-`[hh:mm:ss]`-timestamped blocks. Renaming updates the in-file title only;
-filenames stay stable in V1.
-
-## Future WisperFlow boundary
-
-`session.py` exposes the clean seam (`create_note`, `save_note`,
-`append_transcript_block`, `reveal_note_in_finder`) that a future WisperFlow
-Session Notes feature can reuse without coupling the apps. No WisperFlow code
-exists in V1.
+See [storage.md](storage.md) for the exact on-disk format and migration rules.

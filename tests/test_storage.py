@@ -13,12 +13,13 @@ from stormpad.models import Note, TranscriptBlock
 
 TZ = timezone(timedelta(hours=2))
 T0 = datetime(2026, 7, 23, 14, 30, 0, tzinfo=TZ)
+NOTE_ID = "d746bb5e-4b34-4bf9-a23e-1d98f69b1475"
 
 
 def make_note(tmp_path: Path, **overrides) -> Note:
     base = dict(
-        id="2026-07-23-1430-idea",
-        path=tmp_path / "2026-07-23-1430-idea.md",
+        id=NOTE_ID,
+        path=tmp_path / "app-idea.md",
         title="App idea",
         body="First line.\nSecond line.",
         category=models.IDEAS,
@@ -60,6 +61,7 @@ def test_empty_note_round_trip(tmp_path):
     assert parsed.body == ""
     assert parsed.transcript == []
     assert parsed == note
+    assert "## Transcript" not in text
 
 
 def test_multiline_body_preserved(tmp_path):
@@ -108,17 +110,30 @@ def test_slugify_empty_fallback():
 
 
 def test_build_filename():
-    assert storage.build_filename(T0, "app-idea") == "2026-07-23-1430-app-idea.md"
+    assert storage.build_filename("App idea") == "app-idea.md"
+
+
+@pytest.mark.parametrize(
+    "requested,expected",
+    [
+        ("My File.md", "my-file.md"),
+        ("My File", "my-file.md"),
+        ("../unsafe/name?.MD", "name.md"),
+        ("///", "untitled-note.md"),
+    ],
+)
+def test_build_manual_filename(requested, expected):
+    assert storage.build_manual_filename(requested) == expected
 
 
 def test_unique_path_avoids_collision(tmp_path):
-    first = tmp_path / "2026-07-23-1430-idea.md"
+    first = tmp_path / "idea.md"
     first.write_text("x", encoding="utf-8")
-    second = storage.unique_path(tmp_path, "2026-07-23-1430-idea.md")
-    assert second.name == "2026-07-23-1430-idea-2.md"
+    second = storage.unique_path(tmp_path, "idea.md")
+    assert second.name == "idea-2.md"
     second.write_text("y", encoding="utf-8")
-    third = storage.unique_path(tmp_path, "2026-07-23-1430-idea.md")
-    assert third.name == "2026-07-23-1430-idea-3.md"
+    third = storage.unique_path(tmp_path, "idea.md")
+    assert third.name == "idea-3.md"
 
 
 def test_unique_path_no_collision(tmp_path):
@@ -223,3 +238,151 @@ def test_read_note_reflects_external_edit(tmp_path):
     assert reloaded.title == "Edited Elsewhere"
     assert reloaded.category == models.DRAFTS
     assert reloaded.body == "changed"
+
+
+# --- Stable identity + safe filename migration ------------------------------
+
+
+def test_legacy_note_gets_deterministic_in_memory_id_without_rewrite(tmp_path):
+    path = tmp_path / "2026-07-23-1430-old-title.md"
+    original = "# Old title\n\nCategory: Ideas\n\n## Notes\n\nLegacy body.\n"
+    path.write_text(original, encoding="utf-8")
+    first = storage.read_note(path)
+    second = storage.read_note(path)
+    assert first.id == second.id
+    assert first.legacy_id == path.stem
+    assert first.id_persisted is False
+    assert path.read_text(encoding="utf-8") == original
+
+
+def test_legacy_note_persists_id_on_next_safe_save(tmp_path):
+    path = tmp_path / "legacy.md"
+    path.write_text("# Legacy\n\nCategory: Ideas\n\n## Notes\n\nBody.\n", encoding="utf-8")
+    note = storage.read_note(path)
+    stable_id = note.id
+    storage.write_note(note)
+    reloaded = storage.read_note(path)
+    assert reloaded.id == stable_id
+    assert reloaded.id_persisted is True
+    assert f"ID: {stable_id}" in path.read_text(encoding="utf-8")
+
+
+def test_unknown_metadata_survives_round_trip(tmp_path):
+    path = tmp_path / "legacy.md"
+    text = (
+        "# Legacy\n\n"
+        "Created: 2026-07-23 14:30:00+02:00\n"
+        "Updated: 2026-07-23 14:30:00+02:00\n"
+        "Category: Ideas\n"
+        "Plugin-Value: keep me\n\n"
+        "## Notes\n\nBody.\n"
+    )
+    note = storage.parse(text, path=path)
+    assert note.metadata["Plugin-Value"] == "keep me"
+    assert "Plugin-Value: keep me" in storage.serialize(note)
+
+
+def test_commit_title_filename_preserves_id_and_removes_old_path(tmp_path):
+    note = make_note(tmp_path, path=tmp_path / "old.md", title="My Business Plan")
+    storage.write_note(note)
+    old = note.path
+    storage.commit_title_filename(note)
+    assert note.path.name == "my-business-plan.md"
+    assert note.id == NOTE_ID
+    assert note.path.exists()
+    assert not old.exists()
+    assert storage.read_note(note.path).id == NOTE_ID
+
+
+def test_commit_title_filename_collision(tmp_path):
+    (tmp_path / "my-business-plan.md").write_text("occupied", encoding="utf-8")
+    note = make_note(tmp_path, path=tmp_path / "old.md", title="My Business Plan")
+    storage.write_note(note)
+    storage.commit_title_filename(note)
+    assert note.path.name == "my-business-plan-2.md"
+
+
+def test_commit_title_filename_failure_keeps_old_file(tmp_path, monkeypatch):
+    note = make_note(tmp_path, path=tmp_path / "old.md", title="New title")
+    storage.write_note(note)
+    old = note.path
+
+    def fail_rename(source, target):
+        raise OSError("rename failed")
+
+    monkeypatch.setattr(storage.os, "replace", fail_rename)
+    with pytest.raises(storage.FilenameRenameError):
+        storage.commit_title_filename(note)
+    assert note.path == old
+    assert old.exists()
+
+
+def test_commit_manual_filename_preserves_title_id_and_avoids_collision(tmp_path):
+    (tmp_path / "chosen-name.md").write_text("occupied", encoding="utf-8")
+    note = make_note(tmp_path, path=tmp_path / "old.md", title="Unchanged title")
+    storage.write_note(note)
+    old = note.path
+    storage.commit_manual_filename(note, "../Chosen Name.md")
+    assert note.path.name == "chosen-name-2.md"
+    assert note.title == "Unchanged title"
+    assert note.id == NOTE_ID
+    assert note.path.exists() and not old.exists()
+    assert storage.read_note(note.path).id == NOTE_ID
+
+
+def test_commit_manual_filename_failure_keeps_old_file(tmp_path, monkeypatch):
+    note = make_note(tmp_path, path=tmp_path / "old.md")
+    storage.write_note(note)
+    old = note.path
+
+    def fail_rename(source, target):
+        raise OSError("rename failed")
+
+    monkeypatch.setattr(storage.os, "replace", fail_rename)
+    with pytest.raises(storage.FilenameRenameError):
+        storage.commit_manual_filename(note, "new name.md")
+    assert note.path == old
+    assert old.exists()
+
+
+def test_transcript_visibility_and_collapse_metadata_round_trip(tmp_path):
+    note = make_note(
+        tmp_path,
+        transcript=[],
+        transcript_visible=True,
+        transcript_collapsed=True,
+    )
+    text = storage.serialize(note)
+    assert "Transcript-Block: collapsed" in text
+    assert "## Transcript" in text
+    parsed = storage.parse(text, path=note.path)
+    assert parsed.transcript_visible is True
+    assert parsed.transcript_collapsed is True
+
+
+def test_legacy_transcript_is_visible_without_new_metadata(tmp_path):
+    text = (
+        "# Session\n\n"
+        "Category: Sessions\n\n"
+        "## Notes\n\n"
+        "Body.\n\n"
+        "## Transcript\n\n"
+        "[00:00:04]\nA legacy chunk.\n"
+    )
+    parsed = storage.parse(text, path=tmp_path / "legacy.md")
+    assert parsed.transcript_visible is True
+    assert parsed.transcript[0].text == "A legacy chunk."
+
+
+def test_hidden_transcript_content_round_trips_without_container(tmp_path):
+    note = make_note(
+        tmp_path,
+        transcript=[TranscriptBlock("00:00:04", "Preserved but hidden.")],
+        transcript_visible=False,
+    )
+    note.transcript_visible = False
+    text = storage.serialize(note)
+    assert "Transcript-Block: hidden" in text
+    parsed = storage.parse(text, path=note.path)
+    assert parsed.transcript_visible is False
+    assert parsed.transcript[0].text == "Preserved but hidden."

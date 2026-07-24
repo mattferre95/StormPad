@@ -10,7 +10,13 @@ import pytest
 import stormpad
 from stormpad import models
 from stormpad.errors import InvalidCategoryError, InvalidTimestampError
-from stormpad.models import Note, TranscriptBlock, format_transcript_timestamp
+from stormpad.models import (
+    Note,
+    TranscriptBlock,
+    format_transcript_timestamp,
+    move_transcript_chunk,
+    remove_transcript_chunk,
+)
 
 TZ = timezone(timedelta(hours=2))
 
@@ -80,6 +86,22 @@ def test_add_transcript_block():
     note.add_transcript_block(TranscriptBlock("00:00:04", "hi"), later)
     assert len(note.transcript) == 1
     assert note.updated_at == later
+
+
+def test_transcript_chunk_remove_and_reorder():
+    chunks = [
+        TranscriptBlock("00:00:01", "one"),
+        TranscriptBlock("00:00:02", "two"),
+        TranscriptBlock("00:00:03", "three"),
+    ]
+    moved, destination = move_transcript_chunk(chunks, 0, 2)
+    assert destination == 2
+    assert [chunk.text for chunk in moved] == ["two", "three", "one"]
+    assert [chunk.text for chunk in chunks] == ["one", "two", "three"]
+    assert [chunk.text for chunk in remove_transcript_chunk(moved, 1)] == [
+        "two",
+        "one",
+    ]
 
 
 @pytest.mark.parametrize(

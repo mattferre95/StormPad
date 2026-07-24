@@ -9,10 +9,10 @@ embeddings — this is deliberately simple substring search.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from .errors import InvalidCategoryError
-from .models import ALL_NOTES, CATEGORIES, Note
+from .models import ALL_NOTES, CATEGORIES, UNFILED_PROJECT_ID, Note
 
 FIELD_TITLE = "title"
 FIELD_BODY = "body"
@@ -30,10 +30,13 @@ class Match:
 
 @dataclass
 class SearchResult:
-    """A note that matched, plus per-field match spans for highlighting."""
+    """A ranked note match with source spans and a useful one-line excerpt."""
 
     note: Note
     matches: tuple[Match, ...] = field(default_factory=tuple)
+    score: int = 0
+    snippet: str = ""
+    snippet_field: str | None = None
 
     @property
     def match_count(self) -> int:
@@ -43,6 +46,22 @@ class SearchResult:
 def transcript_text(note: Note) -> str:
     """Concatenate a note's transcript block texts for searching."""
     return "\n".join(block.text for block in note.transcript)
+
+
+def notes_with_live_text(
+    notes: list[Note],
+    note_id: str | None,
+    *,
+    title: str,
+    body: str,
+) -> list[Note]:
+    """Overlay one editor's live text without mutating persisted note objects."""
+    if note_id is None:
+        return list(notes)
+    return [
+        replace(note, title=title, body=body) if note.id == note_id else note
+        for note in notes
+    ]
 
 
 def filter_by_category(notes: list[Note], category: str | None) -> list[Note]:
@@ -58,22 +77,119 @@ def filter_by_category(notes: list[Note], category: str | None) -> list[Note]:
     return [n for n in notes if n.category == category]
 
 
+def filter_by_project(notes: list[Note], project_id: str | None) -> list[Note]:
+    """Filter by project identity; ``None`` means all and Unfiled means no project."""
+    if project_id is None:
+        return list(notes)
+    if project_id == UNFILED_PROJECT_ID:
+        return [note for note in notes if note.project_id is None]
+    return [note for note in notes if note.project_id == project_id]
+
+
+def filter_by_pinned(notes: list[Note], pinned_ids) -> list[Note]:
+    """Return only notes whose stable id is pinned, preserving list order.
+
+    Works across projects and Unfiled because it matches on the note's stable
+    UUID only. Unknown/stale ids simply match nothing.
+    """
+    pinned = set(pinned_ids or ())
+    if not pinned:
+        return []
+    return [note for note in notes if note.id in pinned]
+
+
+def prune_pinned_ids(pinned_ids, existing_ids) -> list[str]:
+    """Drop pinned ids whose notes no longer exist, preserving pin order."""
+    existing = set(existing_ids or ())
+    result: list[str] = []
+    for note_id in pinned_ids or ():
+        if note_id in existing and note_id not in result:
+            result.append(note_id)
+    return result
+
+
 def _spans(text: str, pattern: re.Pattern[str], field_name: str) -> list[Match]:
     return [Match(field_name, m.start(), m.end()) for m in pattern.finditer(text)]
 
 
+def _excerpt(text: str, match: Match | None, *, limit: int = 96) -> str:
+    """Return compact context around a match, preserving useful ellipses."""
+    source = text or ""
+    if not source:
+        return ""
+    if match is None:
+        start = 0
+        end = min(len(source), limit)
+    else:
+        context = max(16, (limit - (match.end - match.start)) // 2)
+        start = max(0, match.start - context)
+        end = min(len(source), match.end + context)
+    excerpt = " ".join(source[start:end].split())
+    if not excerpt:
+        return ""
+    return f"{'…' if start else ''}{excerpt}{'…' if end < len(source) else ''}"
+
+
+def _rank_and_snippet(
+    note: Note,
+    query: str,
+    matches: list[Match],
+) -> tuple[int, str, str | None]:
+    by_field = {
+        field_name: [match for match in matches if match.field == field_name]
+        for field_name in (FIELD_TITLE, FIELD_BODY, FIELD_TRANSCRIPT)
+    }
+    folded_title = note.title.casefold()
+    folded_query = query.casefold()
+    title_matches = by_field[FIELD_TITLE]
+    if folded_title == folded_query:
+        score = 400
+    elif folded_title.startswith(folded_query):
+        score = 300
+    elif title_matches:
+        score = 200
+    elif by_field[FIELD_BODY]:
+        score = 100
+    else:
+        score = 50
+    score += min(len(title_matches), 9) * 4
+    score += min(len(by_field[FIELD_BODY]), 9) * 2
+    score += min(len(by_field[FIELD_TRANSCRIPT]), 9)
+
+    if by_field[FIELD_BODY]:
+        return score, _excerpt(note.body, by_field[FIELD_BODY][0]), FIELD_BODY
+    transcript = transcript_text(note)
+    if by_field[FIELD_TRANSCRIPT]:
+        return (
+            score,
+            _excerpt(transcript, by_field[FIELD_TRANSCRIPT][0]),
+            FIELD_TRANSCRIPT,
+        )
+    if note.body.strip():
+        return score, _excerpt(note.body, None), FIELD_BODY
+    if transcript.strip():
+        return score, _excerpt(transcript, None), FIELD_TRANSCRIPT
+    return score, _excerpt(note.title, title_matches[0] if title_matches else None), FIELD_TITLE
+
+
 def search_notes(
-    notes: list[Note], query: str, *, category: str | None = None
+    notes: list[Note],
+    query: str,
+    *,
+    category: str | None = None,
+    project_id: str | None = None,
 ) -> list[SearchResult]:
     """Search notes by title, body, and transcript text.
 
     - The query is trimmed; an empty query returns every note (still filtered by
       ``category`` and sorted).
     - Matching is case-insensitive and Unicode-safe.
-    - Results are ordered by most recently updated.
+    - Title matches rank above body matches, which rank above transcript matches.
+      Exact and prefix title matches rank above other title matches; recency
+      breaks equal-relevance ties.
     - ``category`` filters independently of the text query.
     """
-    pool = filter_by_category(notes, category)
+    pool = filter_by_project(filter_by_category(notes, category), project_id)
     pool.sort(key=lambda n: n.updated_at, reverse=True)
 
     trimmed = (query or "").strip()
@@ -89,5 +205,22 @@ def search_notes(
             + _spans(transcript_text(note), pattern, FIELD_TRANSCRIPT)
         )
         if matches:
-            results.append(SearchResult(note=note, matches=tuple(matches)))
+            score, snippet, snippet_field = _rank_and_snippet(
+                note,
+                trimmed,
+                matches,
+            )
+            results.append(
+                SearchResult(
+                    note=note,
+                    matches=tuple(matches),
+                    score=score,
+                    snippet=snippet,
+                    snippet_field=snippet_field,
+                )
+            )
+    results.sort(
+        key=lambda result: (result.score, result.note.updated_at),
+        reverse=True,
+    )
     return results

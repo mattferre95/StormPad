@@ -8,9 +8,13 @@ running GUI. The AppKit layer wires these to real views, timers, and defaults.
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
 
+from .block_parser import parse_blocks
+from .blocks import BlockType
+from .exporter import note_to_plain_text
 from .models import CATEGORIES, DEFAULT_CATEGORY, Note
 
 
@@ -22,6 +26,18 @@ class SaveStatus(StrEnum):
     FAILED = "Save failed"
 
 
+def display_tag(note: Note, project_names: dict[str, str] | None = None) -> str | None:
+    """The tag shown on a note row: the Project name, or nothing.
+
+    Notes inside a Project show that Project's name. Unfiled notes show no tag —
+    Categories are never surfaced as note-row tags (they remain in the model and
+    the sidebar). Presentation only: the note's Category is never modified.
+    """
+    if note.project_id:
+        return (project_names or {}).get(note.project_id) or None
+    return None
+
+
 def preview_text(note: Note, *, max_len: int = 140) -> str:
     """A short, clean one-line preview of a note's body.
 
@@ -29,7 +45,16 @@ def preview_text(note: Note, *, max_len: int = 140) -> str:
     excludes the title/Created/Updated/Category lines and the section headers,
     which live outside ``note.body``).
     """
-    collapsed = " ".join(note.body.split())
+    blocks = parse_blocks(note.body)
+    visible = []
+    for block in blocks:
+        if block.kind in (BlockType.DIVIDER, BlockType.TRANSCRIPT):
+            continue
+        if block.kind == BlockType.RAW:
+            visible.append(block.raw or "")
+        else:
+            visible.append(block.text or block.alt or "")
+    collapsed = " ".join(" ".join(visible).split())
     if len(collapsed) <= max_len:
         return collapsed
     return collapsed[:max_len].rstrip() + "…"
@@ -47,15 +72,64 @@ def copy_text(note: Note) -> str:
     internal storage metadata (file path, Created/Updated/Category lines, ids)
     and the serialized Markdown header. Paragraph breaks are preserved.
     """
-    parts: list[str] = [note.title or "Untitled Note"]
-    if note.body.strip():
-        parts.append(note.body.rstrip())
-    if note.transcript:
-        block_lines = ["Transcript"]
-        for block in note.transcript:
-            block_lines.append(f"[{block.timestamp}]\n{block.text}")
-        parts.append("\n\n".join(block_lines))
-    return "\n\n".join(parts).strip() + "\n"
+    return note_to_plain_text(note)
+
+
+@dataclass(frozen=True)
+class DeleteConfirmation:
+    """Copy for the delete-confirmation dialog (pure, so it is testable)."""
+
+    title: str
+    message: str
+    confirm_button: str
+    cancel_button: str = "Cancel"
+
+
+def delete_confirmation(count: int, *, single_title: str | None = None) -> DeleteConfirmation:
+    """Confirmation copy for deleting ``count`` selected notes.
+
+    One note keeps the existing singular language ("Delete "Title"?"); multiple
+    notes use the plural "Remove selected notes?" wording. Both delete through
+    the same safe macOS-Trash path, so both promise recoverability.
+    """
+    if count <= 1:
+        title = f"Delete “{single_title or 'Untitled Note'}”?"
+        return DeleteConfirmation(
+            title=title,
+            message="This note will be moved to the Trash.",
+            confirm_button="Delete",
+        )
+    return DeleteConfirmation(
+        title="Remove selected notes?",
+        message=(
+            f"Are you sure you want to remove these {count} notes? "
+            "This action can be undone from the Trash."
+        ),
+        confirm_button="Remove Notes",
+    )
+
+
+def select_after_bulk_delete(
+    displayed: list[Note], deleted_ids: set[str]
+) -> str | None:
+    """Nearest remaining visible note after removing ``deleted_ids``.
+
+    Prefers the first survivor at or after the earliest deleted position, then
+    falls back to the last survivor before it, then to ``None`` (empty state).
+    ``displayed`` is the pre-delete visible order.
+    """
+    first_removed = next(
+        (i for i, note in enumerate(displayed) if note.id in deleted_ids), None
+    )
+    if first_removed is None:
+        return displayed[0].id if displayed else None
+    for note in displayed[first_removed:]:
+        if note.id not in deleted_ids:
+            return note.id
+    for note in reversed(displayed[:first_removed]):
+        if note.id not in deleted_ids:
+            return note.id
+    return None
 
 
 def next_selection_after_delete(displayed: list[Note], deleted_id: str) -> str | None:
@@ -73,6 +147,295 @@ def next_selection_after_delete(displayed: list[Note], deleted_id: str) -> str |
 def is_speakable(text: str | None) -> bool:
     """True if ``text`` has non-whitespace content worth speaking."""
     return bool(text and text.strip())
+
+
+def title_display_text(note: Note) -> str:
+    """Blank placeholder-facing title for a pristine new note."""
+    if note.title == "Untitled Note" and not note.body.strip() and not note.transcript:
+        return ""
+    return note.title
+
+
+def note_row_is_selected(note_id: str, selected_id: str | None) -> bool:
+    return note_id == selected_id
+
+
+def title_command_focus(selector: str) -> str:
+    """Focus destination for a title command (headlessly testable)."""
+    return "body" if selector == "insertNewline:" else "title"
+
+
+def add_block_menu_mode(*, current_empty: bool, option_pressed: bool) -> str:
+    if current_empty:
+        return "convert"
+    return "above" if option_pressed else "below"
+
+
+@dataclass(frozen=True)
+class GutterRect:
+    """AppKit-free rectangle used to prove editor-gutter geometry."""
+
+    x: float
+    y: float
+    width: float
+    height: float
+
+    @property
+    def max_x(self) -> float:
+        return self.x + self.width
+
+
+@dataclass(frozen=True)
+class BlockGutterLayout:
+    add: GutterRect
+    edit: GutterRect
+    text_origin_x: float
+    clearance: float
+
+    @property
+    def does_not_overlap_text(self) -> bool:
+        rightmost = max(self.add.max_x, self.edit.max_x)
+        return rightmost + self.clearance <= self.text_origin_x
+
+    @property
+    def controls_do_not_overlap(self) -> bool:
+        return self.add.max_x <= self.edit.x or self.edit.max_x <= self.add.x
+
+
+def block_gutter_layout(
+    text_origin_x: float,
+    y: float,
+    *,
+    control_size: float = 28.0,
+    text_clearance: float = 8.0,
+    control_gap: float = 2.0,
+) -> BlockGutterLayout:
+    """Place the add (+) and block-edit controls left of the text column.
+
+    Both sit wholly outside the text column so they can never overlap text;
+    ``edit`` is the inner control (nearest the text) and ``add`` sits to its
+    left, matching the reading order of "insert here" then "edit this block".
+    """
+    edit_x = text_origin_x - text_clearance - control_size
+    add_x = edit_x - control_gap - control_size
+    return BlockGutterLayout(
+        add=GutterRect(add_x, y, control_size, control_size),
+        edit=GutterRect(edit_x, y, control_size, control_size),
+        text_origin_x=text_origin_x,
+        clearance=text_clearance,
+    )
+
+
+@dataclass(frozen=True)
+class NotesPanelGeometry:
+    """The exact end state of a notes-panel collapse or expand.
+
+    Animation only interpolates towards these numbers; the completion handler
+    writes them verbatim, so an interrupted transition still lands correctly.
+    """
+
+    collapsed: bool
+    width: float
+    minimum: float
+    maximum: float
+    divider_position: float
+
+
+def notes_panel_geometry(
+    collapsed: bool,
+    *,
+    sidebar_width: float,
+    expanded_width: float,
+    collapsed_width: float = 46.0,
+    minimum: float = 260.0,
+    maximum: float = 440.0,
+) -> NotesPanelGeometry:
+    """Resolve the notes panel's final widths for a collapse state.
+
+    Collapsed pins the column to its compact tab width; expanded restores the
+    original resizable range, so widths are preserved exactly across a
+    collapse/expand round trip.
+    """
+    if collapsed:
+        return NotesPanelGeometry(
+            collapsed=True,
+            width=collapsed_width,
+            minimum=collapsed_width,
+            maximum=collapsed_width,
+            divider_position=sidebar_width + collapsed_width,
+        )
+    return NotesPanelGeometry(
+        collapsed=False,
+        width=expanded_width,
+        minimum=minimum,
+        maximum=maximum,
+        divider_position=sidebar_width + expanded_width,
+    )
+
+
+PROFILE_FALLBACK_NAME = "StormPad User"
+PROFILE_SUBTITLE = "Local workspace"
+
+
+def profile_display_name(full_name: str | None) -> str:
+    """The name shown in the bottom-left row.
+
+    Uses the macOS display name when it is actually usable, otherwise a neutral
+    local fallback. StormPad has no accounts — this is a label, not an identity.
+    """
+    if not isinstance(full_name, str):
+        return PROFILE_FALLBACK_NAME
+    cleaned = " ".join(full_name.split())
+    return cleaned or PROFILE_FALLBACK_NAME
+
+
+@dataclass(frozen=True)
+class MenuEntry:
+    """One row of a declarative menu spec (a title of ``None`` is a separator).
+
+    ``icon`` is an SF Symbol name (tinted with the theme accent when rendered);
+    ``key`` is a single-character keyboard equivalent (⌘ modifier, shown as a
+    trailing shortcut hint).
+    """
+
+    title: str | None
+    action: str | None = None
+    represented: str | None = None
+    submenu: tuple[MenuEntry, ...] = ()
+    icon: str | None = None
+    key: str = ""
+
+    @property
+    def is_separator(self) -> bool:
+        return self.title is None
+
+
+def profile_menu_spec(themes: list[tuple[str, str]]) -> tuple[MenuEntry, ...]:
+    """The bottom-left local profile menu.
+
+    ``themes`` is ``(theme_id, display name)``. Appearance routes into the same
+    ``selectTheme:`` action the View menu uses, so the two can never drift.
+    There is deliberately nothing here implying an account: no sign-in, upgrade,
+    profile, subscription, or sync.
+    """
+    return (
+        MenuEntry("Settings…", "showSettings:", icon="gearshape", key=","),
+        MenuEntry(None),
+        MenuEntry(
+            "Appearance",
+            icon="circle.lefthalf.filled",
+            submenu=tuple(
+                MenuEntry(name, "selectTheme:", theme_id) for theme_id, name in themes
+            ),
+        ),
+        MenuEntry(None),
+        MenuEntry("Reveal StormPad Folder", "revealStormPadFolder:", icon="folder"),
+        MenuEntry("About StormPad", "orderFrontStandardAboutPanel:", icon="info.circle"),
+        MenuEntry(None),
+        MenuEntry(
+            "Quit StormPad",
+            "terminate:",
+            icon="rectangle.portrait.and.arrow.right",
+            key="q",
+        ),
+    )
+
+
+class TransientMenuState:
+    """Tracks whether a row's transient menu is open.
+
+    A row that pops up a menu must not also treat the click that dismissed the
+    menu as a selection, and must accept clicks again as soon as the menu
+    closes. Keeping that as one small state object means the cleanup cannot be
+    forgotten in one of the paths.
+    """
+
+    def __init__(self) -> None:
+        self._open = False
+
+    @property
+    def is_open(self) -> bool:
+        return self._open
+
+    @property
+    def accepts_clicks(self) -> bool:
+        return not self._open
+
+    def opened(self) -> None:
+        self._open = True
+
+    def closed(self) -> None:
+        self._open = False
+
+
+def block_gutter_canvas_y(
+    *,
+    scroll_origin_y: float,
+    text_inset_y: float,
+    block_origin_y: float,
+    scroll_offset_y: float,
+) -> float:
+    """Map a text-layout block origin into editor-canvas coordinates."""
+    return scroll_origin_y + text_inset_y + block_origin_y - scroll_offset_y
+
+
+def gutter_hover_hit(
+    *,
+    x: float,
+    y: float,
+    gutter_width: float,
+    block_area_top: float,
+    block_area_bottom: float,
+    interactive: bool,
+) -> bool:
+    """Whether a pointer is in the dedicated interactive block-gutter strip."""
+    return interactive and 0.0 <= x <= gutter_width and block_area_top <= y <= block_area_bottom
+
+
+def block_index_for_location(native_text: str, location: int) -> int:
+    """Resolve a Cocoa UTF-16 location to its logical block line."""
+    location = min(max(int(location), 0), _utf16_length(native_text))
+    consumed = 0
+    for index, line in enumerate(native_text.split("\n")):
+        boundary = consumed + _utf16_length(line)
+        if location <= boundary:
+            return index
+        consumed = boundary + 1
+    return max(0, native_text.count("\n"))
+
+
+def block_indices_for_selection(native_text: str, location: int, length: int) -> list[int]:
+    """Map an actual Cocoa selection range to all intersected block lines."""
+    total = _utf16_length(native_text)
+    start = min(max(int(location), 0), total)
+    end = min(max(start + int(length), start), total)
+    if end == start:
+        return [block_index_for_location(native_text, start)]
+    result: list[int] = []
+    cursor = 0
+    lines = native_text.split("\n")
+    for index, line in enumerate(lines):
+        content_end = cursor + _utf16_length(line)
+        line_end = content_end + (1 if index < len(lines) - 1 else 0)
+        if cursor < end and line_end > start:
+            result.append(index)
+        cursor = line_end
+    return result
+
+
+def full_note_selection_ranges(
+    title: str, native_body: str
+) -> tuple[tuple[int, int], tuple[int, int]]:
+    """Return Cocoa ranges covering the complete title and body canvases."""
+    return ((0, _utf16_length(title)), (0, _utf16_length(native_body)))
+
+
+def _utf16_length(value: str) -> int:
+    return len(value.encode("utf-16-le")) // 2
+
+
+def formatting_toolbar_visible(*, selection_length: int, editor_focused: bool) -> bool:
+    return editor_focused and selection_length > 0
 
 
 def status_style(status: SaveStatus) -> tuple[str, str, str]:
@@ -114,7 +477,7 @@ def choose_selected_note(notes: list[Note], saved_id: str | None) -> Note | None
     """
     if saved_id:
         for note in notes:
-            if note.id == saved_id:
+            if note.id == saved_id or note.legacy_id == saved_id:
                 return note
     return notes[0] if notes else None
 

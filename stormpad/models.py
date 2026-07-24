@@ -23,6 +23,8 @@ DRAFTS = "Drafts"
 CATEGORIES: tuple[str, ...] = (IDEAS, SESSIONS, DRAFTS)
 DEFAULT_CATEGORY = IDEAS
 ALL_NOTES = "All Notes"  # filter sentinel, never written to disk
+UNFILED = "Unfiled"
+UNFILED_PROJECT_ID = "__unfiled__"
 
 
 def validate_category(category: str) -> str:
@@ -84,6 +86,46 @@ class TranscriptBlock:
     text: str
 
 
+@dataclass
+class Project:
+    """Filesystem-backed grouping for related notes.
+
+    ``icon`` is an optional presentation value (see :mod:`stormpad.icons`);
+    ``None`` means the default folder. It never affects the project's identity,
+    its folder, or which notes belong to it.
+    """
+
+    id: str
+    path: Path
+    name: str
+    created_at: datetime
+    updated_at: datetime
+    icon: str | None = None
+
+
+def remove_transcript_chunk(chunks: list[TranscriptBlock], index: int) -> list[TranscriptBlock]:
+    """Return transcript chunks with one valid index removed."""
+    result = list(chunks)
+    if 0 <= index < len(result):
+        result.pop(index)
+    return result
+
+
+def move_transcript_chunk(
+    chunks: list[TranscriptBlock], index: int, offset: int
+) -> tuple[list[TranscriptBlock], int]:
+    """Move one transcript chunk by an offset, clamped to the list."""
+    if not chunks:
+        return [], 0
+    source = min(max(index, 0), len(chunks) - 1)
+    destination = min(max(source + offset, 0), len(chunks) - 1)
+    result = list(chunks)
+    if source != destination:
+        moving = result.pop(source)
+        result.insert(destination, moving)
+    return result, destination
+
+
 # --- Note ---------------------------------------------------------------------
 
 
@@ -91,8 +133,9 @@ class TranscriptBlock:
 class Note:
     """In-memory representation of a StormPad Markdown note.
 
-    ``id`` is the stable identity (the file's stem) and never changes when the
-    title is edited. ``path`` is where the note lives on disk.
+    ``id`` is a stable UUID stored in Markdown metadata and never changes when
+    the title or filename changes. ``legacy_id`` records a pre-Phase-5.1
+    filename stem so an old selected-note preference can migrate safely.
     """
 
     id: str
@@ -103,9 +146,17 @@ class Note:
     created_at: datetime
     updated_at: datetime
     transcript: list[TranscriptBlock] = field(default_factory=list)
+    metadata: dict[str, str] = field(default_factory=dict)
+    transcript_visible: bool = False
+    transcript_collapsed: bool = False
+    id_persisted: bool = field(default=True, compare=False)
+    legacy_id: str | None = field(default=None, compare=False)
+    project_id: str | None = None
 
     def __post_init__(self) -> None:
         validate_category(self.category)
+        if self.transcript:
+            self.transcript_visible = True
 
     # -- mutation helpers (each refreshes updated_at) --------------------------
 
@@ -124,4 +175,6 @@ class Note:
 
     def add_transcript_block(self, block: TranscriptBlock, now: datetime) -> None:
         self.transcript.append(block)
+        self.transcript_visible = True
+        self.transcript_collapsed = False
         self.updated_at = now

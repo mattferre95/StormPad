@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import uuid
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -9,6 +10,7 @@ import pytest
 from stormpad import models
 from stormpad.errors import (
     EmptyTranscriptError,
+    FilenameRenameError,
     InvalidCategoryError,
     NoteNotFoundError,
 )
@@ -46,8 +48,10 @@ def test_create_note_writes_file(store):
     assert note.path.exists()
     assert note.title == "App idea"
     assert note.category == models.IDEAS
-    assert note.path.name == "2026-07-23-1430-app-idea.md"
-    assert note.id == note.path.stem
+    assert note.path.name == "app-idea.md"
+    assert str(uuid.UUID(note.id)) == note.id
+    assert note.id != note.path.stem
+    assert f"ID: {note.id}" in note.path.read_text(encoding="utf-8")
 
 
 def test_create_note_invalid_category(store):
@@ -55,17 +59,47 @@ def test_create_note_invalid_category(store):
         store.create_note("x", "Bogus")
 
 
-def test_rename_keeps_filename_stable(store, clock):
+def test_rename_commits_filename_but_keeps_stable_id(store, clock):
     note = store.create_note("Original")
     original_path = note.path
+    stable_id = note.id
     clock.tick()
     renamed = store.update_title(note.id, "A Completely Different Title")
     assert renamed.title == "A Completely Different Title"
-    assert renamed.path == original_path  # file did NOT move
-    assert renamed.id == note.id
-    assert original_path.exists()
+    assert renamed.path.name == "a-completely-different-title.md"
+    assert renamed.id == stable_id
+    assert not original_path.exists()
     # Reload from disk confirms persistence.
     assert store.load_note(note.id).title == "A Completely Different Title"
+
+
+def test_manual_filename_rename_keeps_title_and_stable_id(store):
+    note = store.create_note("Title stays")
+    original = note.path
+    renamed = store.rename_filename(note.id, "Custom File.MD")
+    assert renamed.path.name == "custom-file.md"
+    assert renamed.title == "Title stays"
+    assert renamed.id == note.id
+    assert not original.exists()
+    reloaded = store.load_note(note.id)
+    assert reloaded.path.name == "custom-file.md"
+    assert reloaded.title == "Title stays"
+    assert reloaded.metadata["Filename-Mode"] == "manual"
+
+
+def test_manual_filename_failure_restores_previous_file_and_mode(store, monkeypatch):
+    note = store.create_note("Original")
+    original = note.path
+
+    def fail_commit(_note, _requested):
+        raise FilenameRenameError("manual rename failed")
+
+    monkeypatch.setattr("stormpad.storage.commit_manual_filename", fail_commit)
+    with pytest.raises(FilenameRenameError, match="manual rename failed"):
+        store.rename_filename(note.id, "new name.md")
+    reloaded = store.load_note(note.id)
+    assert reloaded.path == original
+    assert "Filename-Mode" not in reloaded.metadata
 
 
 def test_update_body_and_timestamp(store, clock):
@@ -93,6 +127,7 @@ def test_append_one_transcript_block(store):
     assert len(reloaded.transcript) == 1
     assert reloaded.transcript[0].timestamp == "00:00:04"
     assert reloaded.transcript[0].text == "First chunk"
+    assert reloaded.transcript_visible is True
 
 
 def test_append_multiple_blocks_preserve_order(store):
@@ -171,3 +206,62 @@ def test_full_reload_after_body_and_transcript(store, clock):
     fresh = NoteStore(store.notes_dir, clock=clock).load_note(note.id)
     assert fresh.body == "line 1\nline 2"
     assert [b.text for b in fresh.transcript] == ["chunk a", "chunk b"]
+
+
+def test_title_collision_uses_numbered_suffix(store):
+    first = store.create_note("Same title")
+    second = store.create_note("Other")
+    renamed = store.update_title(second.id, "Same title")
+    assert first.path.name == "same-title.md"
+    assert renamed.path.name == "same-title-2.md"
+
+
+def test_save_with_title_commit_updates_path(store):
+    note = store.create_note("Original")
+    stable_id = note.id
+    note.title = "Committed later"
+    store.save_note(note, commit_title=True)
+    assert note.path.name == "committed-later.md"
+    assert store.load_note(stable_id).path == note.path
+
+
+def test_delete_stages_managed_attachments_with_note(tmp_path, clock):
+    deleted_bundles = []
+
+    def inspect_delete(bundle):
+        assert (bundle / "Notes").is_dir()
+        assert (bundle / "Attachments").is_dir()
+        deleted_bundles.append(bundle)
+        import shutil
+
+        shutil.rmtree(bundle)
+
+    store = NoteStore(tmp_path / "StormPad" / "Notes", clock=clock, delete_strategy=inspect_delete)
+    note = store.create_note("With attachment")
+    managed = tmp_path / "StormPad" / "Attachments" / note.id
+    managed.mkdir(parents=True)
+    (managed / "brief.pdf").write_bytes(b"pdf")
+    store.delete_note(note.id)
+    assert len(deleted_bundles) == 1
+    assert not note.path.exists()
+    assert not managed.exists()
+
+
+def test_rename_failure_preserves_saved_content_at_old_path(
+    store, monkeypatch
+):
+    note = store.create_note("Original")
+    old_path = note.path
+    note.title = "New title"
+    note.body = "The body was safely written."
+
+    def fail_commit(_note):
+        raise FilenameRenameError("rename failed")
+
+    monkeypatch.setattr("stormpad.storage.commit_title_filename", fail_commit)
+    with pytest.raises(FilenameRenameError, match="rename failed"):
+        store.save_note(note, commit_title=True)
+    assert old_path.exists()
+    reloaded = store.load_note(note.id)
+    assert reloaded.title == "New title"
+    assert reloaded.body == "The body was safely written."

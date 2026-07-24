@@ -4,104 +4,94 @@
 
 # StormPad
 
-**A local-first notepad for capturing ideas as they happen.**
+**A calm, local-first macOS notepad for capturing ideas as they happen.**
 
 </div>
 
 ---
 
-StormPad is a native macOS notepad for fast idea capture and private, local
-writing. It borrows the familiar structure of Apple Notes — sidebar, note list,
-editor, search, autosave — but is visually its own thing: modern, calm,
-premium, and local-first. Your notes are saved as plain **Markdown files** on
-your Mac. No cloud sync, no accounts, no telemetry, no external AI.
+StormPad is a native Python + AppKit application with a focused, block-oriented
+writing canvas. Notes stay as human-readable Markdown on your Mac; attachments
+are copied into local managed folders. There are no accounts, cloud sync,
+telemetry, external AI services, or web views.
 
-> **Status:** V1 in active development. The local-first **core** (Markdown
-> storage, notes, categories, transcript blocks, search, preferences), the
-> **native macOS UI** (three-column window, create/edit/autosave, search,
-> categories, empty/search states), the **V1 actions** — Copy Note, Append Test
-> Transcript, Open File, Reveal in Finder, Delete → Trash (with confirmation),
-> native **Speak Selection** — and **all three polished themes with live
-> switching** are implemented; `./scripts/run.sh` launches the real app. Still
-> to come: `.app` / `.dmg` packaging (Phase 6). This README describes the V1
-> scope; voice recording/transcription remain a later phase (see Roadmap).
+> **Status:** Phase 5.1.4 critical editor, navigation, dragging, and lifecycle
+> repairs are implemented locally on `feature/notion-editor` and ready for
+> hands-on review. Phase 6 packaging has
+> not started: there is no final `.app`, `.icns`, `.dmg`, signing,
+> notarization, release, or landing page yet.
 
-## Screenshots
+## What is implemented
 
-_Screenshots land during Phase 5 (visual fidelity)._
+- Native three-column macOS window: sidebar, collapsible note list, editor.
+- Clear themed selected-note treatment that remains visible while writing.
+- Blank new-note flow with an unsaved `Untitled` placeholder and continuous
+  title-to-body keyboard transition. A `+` in the Notes header, Cmd+N, File →
+  New Note, and New Note in Project all run the same creation command, so the
+  note lands in the selected Project (or Unfiled) with the title focused.
+- Native block editor for Text, Heading 1–3, To-do, Bulleted list, Numbered
+  list, Quote, Divider, Link, Image, File, and optional Transcript.
+- One pointer-following `+` in a dedicated non-overlapping gutter. Block drag
+  controls, drop targets, insertion indicators, and Move Up/Down UI are absent.
+- Selection-aware block commands convert one or many selected paragraphs in
+  place; collapsed-caret commands retain insertion behavior.
+- Editor-wide Cmd+A/Delete clears title, body, attachment references, and
+  Transcript presentation as one undoable action without deleting the note or
+  managed attachment files.
+- Bold, italic, underline, link, curated text colors, and curated highlights,
+  with keyboard shortcuts plus explicit Clear and Clear / Transparent semantic
+  swatches.
+- Local filesystem-backed Projects alongside categories, with All Notes and
+  Unfiled filters, note counts, safe note movement, and project-aware creation.
+- Optional Project icons — a curated SF Symbol or a single emoji — chosen from a
+  compact native picker, persisted with the project and never affecting its
+  identity, folder, or notes.
+- A compact bottom-left local workspace row opening Settings, Appearance,
+  Reveal StormPad Folder, About, and Quit. StormPad has no accounts, so it shows
+  no sign-in, upgrade, subscription, or sync affordance.
+- Restrained native motion — collapsing the notes panel, changing the selected
+  surface, reloading the note list, and revealing hover controls — with every
+  duration coming from one policy that honours macOS Reduce Motion.
+- A compact top-right native Share button plus File and Note menu commands.
+  Notes share as readable temporary TXT files through
+  `NSSharingServicePicker`; projects share as sanitized local ZIP packages.
+- Direct whole-row project reordering with persisted custom order, insertion
+  feedback, undo/redo, and context-menu Move Up/Down alternatives.
+- Direct whole-row note dragging from the middle list onto Projects or
+  Unfiled, preserving stable identity, attachments, selection, and rollback
+  safety. All Notes is intentionally not a destination.
+- Debounced atomic autosave, native undo/redo, search, categories, restored
+  selection, Copy Note, Open File, Reveal in Finder, Delete to Trash, and
+  Speak Selection.
+- Stable UUID note identity independent of title/filename.
+- Safe title-derived filenames such as `my-business-plan.md`, with collision
+  suffixes, legacy-note migration, and an explicit sanitized manual rename
+  mode available from Note Info.
+- Managed local images/files under `Attachments/<stable-note-id>/`, including
+  native image previews, file type/size, Open/Reveal, and conservative orphan
+  tracking.
+- A protected native Transcript container with empty/populated states,
+  collapse/expand, timestamped read-only rows, contextual test append/chunk
+  actions, search, undo, and persistence.
+- Note Info with current filename/path/dates/category/word count and native
+  open/reveal/rename/export/settings actions.
+- Deterministic plain-text export through a native save panel.
+- Complete native application menus and a reusable Settings window for theme,
+  the Add Block hover control, and local storage locations.
+- Storm Blue, Light, and Deep Dark themes with live switching.
 
-| Storm Blue (default) | Light | Deep Dark / Focus |
-| --- | --- | --- |
-| _placeholder_ | _placeholder_ | _placeholder_ |
+## Run
 
-## Features
-
-- Native macOS window with a three-column layout: **sidebar → note list → editor**
-- Create, rename, and edit notes
-- Debounced **autosave** with a live save-status indicator
-- Notes stored as plain **Markdown** — the source of truth
-- Reloads your notes on restart
-- **Search** across note titles and body text, with a results state
-- Categories: **All Notes · Ideas · Sessions · Drafts**
-- Selected-note, empty, and search-results states
-- **Delete** with confirmation
-- **Open File** and **Reveal in Finder**
-- **Copy Note**
-- **Append Test Transcript** — timestamped transcript blocks (a clean seam for
-  future voice sessions; no recording/transcription in V1)
-- **Speak Selection** — native macOS text-to-speech for selected editor text
-  (right-click or Edit ▸ Speech; Stop Speaking to interrupt)
-- A **local-first & private** indicator
-- Three complete themes with a **View → Theme** switcher that persists
-
-## Themes
-
-| Theme | Feel |
-| --- | --- |
-| **Storm Blue / Signature** (default) | Night-navy surfaces, electric-blue & cyan accents, subtle glow |
-| **Light** | Clean cool-gray canvas, frosted white panels, restrained blue accents |
-| **Deep Dark / Focus** | Near-black monochrome, no colored glow, tuned for long focused writing |
-
-Switch live from **View ▸ Theme** — no relaunch — and StormPad remembers your
-choice. Each theme also sets a matching native window appearance (traffic
-lights, cursor, scrollbars).
-
-## Local-first
-
-StormPad reads and writes plain `.md` files in a folder you own. The app is a
-quiet, beautiful window over that folder — nothing leaves your Mac. Because the
-files are ordinary Markdown, you can back them up, edit them in any other
-editor, move them, or put them under version control.
-
-## V1 scope
-
-The full product definition lives in [PRD.md](PRD.md). V1 is deliberately
-small: a clean, reliable, local-first notepad foundation.
-
-### Non-goals (V1)
-
-No speech recording, Whisper transcription, global hotkeys, WisperFlow
-integration, system-audio capture, speaker labels, AI summaries, cloud sync,
-accounts, payments, telemetry, or analytics. V1 is the standalone local
-notepad only.
-
-## Requirements
-
-- macOS
-- Python 3.12
-- [PyObjC](https://pyobjc.readthedocs.io/) (installed automatically into a
-  local virtual environment by the scripts below)
-
-## Installation & run
+Requires macOS and Python 3.12.
 
 ```bash
 ./scripts/run.sh
 ```
 
-On first run this creates a local `.venv`, installs StormPad and its runtime
-dependencies, and launches the app.
+The script creates a local `.venv` on first run, installs the project, and
+launches the native development app.
 
-Prefer manual setup?
+Manual setup:
 
 ```bash
 python3.12 -m venv .venv
@@ -110,112 +100,124 @@ pip install -e '.[dev]'
 python -m stormpad
 ```
 
-## Tests
+## Verify
 
 ```bash
 ./scripts/test.sh
+./.venv/bin/ruff check .
+./.venv/bin/python -m compileall -q stormpad scripts tests
+./.venv/bin/python -m stormpad --self-check
+./.venv/bin/python -m stormpad --smoke
+./.venv/bin/python scripts/native_interaction_smoke.py
 ```
 
-Non-UI logic (models, storage, paths, session, search, preferences) is unit
-tested with `pytest` and runs headlessly — no app launch required.
+The test suite is headless and uses temporary directories. Native `--smoke`
+and visual launches require an active macOS display session.
 
-Formatting & lint:
+## Local storage
 
-```bash
-./scripts/format.sh
+```text
+~/Documents/StormPad/
+├── Notes/
+│   ├── my-business-plan.md
+│   └── Projects/
+│       └── build/
+│           ├── .stormpad-project.json
+│           └── editor-plan.md
+└── Attachments/
+    └── <stable-note-id>/
+        ├── moodboard.png
+        └── brief.pdf
 ```
 
-## Storage location
-
-```
-~/Documents/StormPad/Notes/
-```
-
-The app creates this folder on first launch (never on import; tests use a
-temporary directory and never touch your real Documents). Markdown files are
-the source of truth. Renaming a note updates the title inside the Markdown
-file; the underlying filename stays stable in V1.
-
-Each note is a plain, human-readable Markdown file:
+A note starts with a title and metadata envelope, followed by the Markdown body:
 
 ```markdown
-# App idea — voice session notes
+# My Business Plan
 
-Created: 2026-07-23 16:47:06+02:00
-Updated: 2026-07-23 16:47:06+02:00
-Category: Sessions
+Created: 2026-07-23 14:30:00+02:00
+Updated: 2026-07-23 15:05:00+02:00
+Category: Ideas
+ID: 6a774f94-09f6-44f1-9e08-41fc0ddde477
 
 ## Notes
 
-Capture before it evaporates.
-Local-first, plain Markdown.
+## Direction
 
-## Transcript
+A **focused** plan with <u>clear ownership</u>.
 
-[00:00:04]
-This is a captured thought.
-
-[00:00:11]
-Chunks append in order.
+- [x] Define the first release
 ```
 
-Filenames are stable, slugged, and timestamped (e.g.
-`2026-07-23-1647-app-idea-voice-session-notes.md`).
+Standard Markdown is used where possible. Underline and curated semantic colors
+use a small allow-listed StormPad HTML representation; Markdown/HTML is never
+executed. See [docs/storage.md](docs/storage.md) for the exact format,
+attachment policy, filename behavior, and legacy migration.
+
+## Themes
+
+| Theme | Character |
+| --- | --- |
+| **Storm Blue** | Night navy, restrained electric blue/cyan, subtle selection glow. |
+| **Light** | Cool white canvas with soft gray-blue selection. |
+| **Deep Dark** | Near-black zinc surfaces for quiet focus. |
+
+Switch from **View ▸ Theme** or **StormPad ▸ Settings…**. Theme, selected
+project, project ordering/collapse, collapsed-note-list state, and the
+hover-control preference persist.
+
+## Screenshots
+
+Sanitized Phase 5.1.3 and 5.1.4 fixtures and reproducible capture commands are documented
+in [docs/screenshots/README.md](docs/screenshots/README.md). Do not capture real
+personal notes for repository screenshots.
 
 ## Architecture
 
-Non-UI logic is fully decoupled from AppKit so it stays testable.
+The AppKit layer renders a semantic block model backed by one rich
+`NSTextView`; storage/parser/session code remains AppKit-free:
 
-```
+```text
 stormpad/
-  app.py          entry point / NSApplication lifecycle & menus
-  window.py       main window + three-column split controller
-  models.py       Note data structures
-  storage.py      Markdown serialization + note file CRUD
-  paths.py        app paths & directory creation
-  session.py      note/session operations (create, save, append transcript)
-  search.py       title + body search / filtering
-  preferences.py  persisted theme & last-open note
-  theme.py        semantic theme tokens (Storm Blue / Light / Deep Dark)
-  views/          sidebar, note_list, editor, toolbar, transcript, empty_state, controls
-assets/           official logo + generated icons
-scripts/          run.sh · test.sh · format.sh · generate_icons.py
-tests/            headless unit tests
+  app.py                     application lifecycle and native menus
+  window.py                  window, actions, autosave and selection controller
+  blocks.py                  semantic blocks and inline marks
+  block_parser.py            Markdown to blocks
+  block_serializer.py        blocks to deterministic safe Markdown
+  attachments.py             local managed attachment policy
+  models.py / storage.py     notes, projects, identity, atomic local file I/O
+  session.py                 CRUD, movement, deletion safety, transcript seam
+  preferences.py / theme.py  persisted state and three complete palettes
+  exporter.py                deterministic readable TXT output
+  sharing.py                 temporary note TXT and sanitized project ZIP shares
+  dragdrop.py                private UUID payloads and pure reorder helpers
+  views/block_editor.py      native writing page, gutter and formatting
+  views/note_list.py         selected rows and collapsible panel
+  views/settings.py          reusable native Settings window
 ```
 
-See [docs/architecture.md](docs/architecture.md) for detail.
+See [docs/architecture.md](docs/architecture.md) for selection, undo, autosave,
+transcript, and migration details.
+
+## Scope and roadmap
+
+StormPad remains a standalone local-first notepad. This phase does not add
+recording, live transcription, AI writing, cloud storage, collaboration,
+arbitrary embeds, databases, or publishing.
+
+- **Phase 5.1.4 (current):** data-safe native Return handling, trustworthy
+  sidebar hit-testing/drag surfaces, and close/reopen lifecycle repair.
+- **Phase 6 (next, after manual review):** generate the official `.icns`, build
+  a standalone `StormPad.app`, install-test it from `/Applications`, and create
+  a drag-to-Applications `.dmg`.
+- **Future:** a GitHub Release asset linked from a mattferre.com StormPad page.
+- **Later V2 direction:** WisperFlow Session Notes may call the existing local
+  transcript seam. WisperFlow is a separate project and was not touched here.
 
 ## Privacy
 
-> StormPad stores notes locally on your Mac. V1 does not use cloud sync,
-> accounts, analytics, telemetry, external AI APIs, or network services.
-
-## Roadmap
-
-- **V1** — standalone local-first Markdown notepad _(current)_
-  - **Phase 6 (next)** — package a standalone, double-clickable `StormPad.app`
-    and a drag-to-Applications `.dmg` (official logo as the app icon)
-- **V2** — WisperFlow **Session Notes**: long-form local dictation appends
-  timestamped transcript blocks into StormPad-style notes
-- **Later** — folders/tags, Markdown preview, export, local intelligence
-  (all local-first)
-
-Future distribution (not built yet): a **mattferre.com** showcase with a
-_Download for macOS_ button linking to a **GitHub Release** `StormPad.dmg` —
-open the DMG, drag StormPad to Applications, launch.
-
-### Relationship to WisperFlow
-
-StormPad is built as a **separate, standalone** project first. Its `Note` /
-storage / session concepts are designed so WisperFlow can later reuse them for
-a premium Session Notes feature — without coupling the two apps. No WisperFlow
-code ships in V1.
-
-## Contributing
-
-Issues and PRs are welcome. Please keep changes within the V1 scope and the
-local-first, no-network principle. Run `./scripts/format.sh` and
-`./scripts/test.sh` before opening a PR.
+Everything stays on this Mac. StormPad has no network service, account,
+analytics, telemetry, or external AI dependency.
 
 ## License
 

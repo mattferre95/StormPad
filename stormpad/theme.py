@@ -92,6 +92,28 @@ class Theme:
     destructive: str
     destructive_background: str
 
+    # -- Block editor --
+    gutter_background: str
+    gutter_border: str
+    formatting_background: str
+    formatting_border: str
+    quote_border: str
+    attachment_background: str
+    attachment_border: str
+    divider_line: str
+
+    # -- Semantic inline colors (stored by token name, rendered per theme) --
+    inline_gray: str
+    inline_blue: str
+    inline_cyan: str
+    inline_green: str
+    inline_yellow: str
+    inline_orange: str
+    inline_red: str
+    inline_purple: str
+    inline_brown: str
+    inline_pink: str
+
     # -- Decorative (numeric) --
     gradient_top: str
     gradient_bottom: str
@@ -151,6 +173,24 @@ STORM_BLUE_THEME = Theme(
     warning_background="#3A2F12",
     destructive="#FF8080",
     destructive_background="#3A1620",
+    gutter_background="#13234A",
+    gutter_border="#24406E",
+    formatting_background="#13234A",
+    formatting_border="#24406E",
+    quote_border="#00C7FF",
+    attachment_background="#101F42",
+    attachment_border="#1C3B63",
+    divider_line="#24406E",
+    inline_gray="#9FB6CC",
+    inline_blue="#60A5FA",
+    inline_cyan="#22D3EE",
+    inline_green="#4ADE80",
+    inline_yellow="#FACC15",
+    inline_orange="#FB923C",
+    inline_red="#F87171",
+    inline_purple="#C084FC",
+    inline_brown="#C89F7B",
+    inline_pink="#F472B6",
     gradient_top="#12224F",
     gradient_bottom="#0A1128",
     glow_color="#12224F",
@@ -209,6 +249,24 @@ LIGHT_THEME = Theme(
     warning_background="#FEF3C7",
     destructive="#DC2626",
     destructive_background="#FEE2E2",
+    gutter_background="#FFFFFF",
+    gutter_border="#CBD6EC",
+    formatting_background="#FFFFFF",
+    formatting_border="#CBD6EC",
+    quote_border="#2563EB",
+    attachment_background="#F4F9FF",
+    attachment_border="#D5E6F5",
+    divider_line="#CBD6EC",
+    inline_gray="#64748B",
+    inline_blue="#2563EB",
+    inline_cyan="#0891B2",
+    inline_green="#16A34A",
+    inline_yellow="#A16207",
+    inline_orange="#EA580C",
+    inline_red="#DC2626",
+    inline_purple="#9333EA",
+    inline_brown="#92400E",
+    inline_pink="#DB2777",
     gradient_top="#EAF1FF",
     gradient_bottom="#F7FAFF",
     glow_color="#EAF1FF",
@@ -267,6 +325,24 @@ DEEP_DARK_THEME = Theme(
     warning_background="#332611",
     destructive="#F87171",
     destructive_background="#341A1A",
+    gutter_background="#18181B",
+    gutter_border="#3A3A40",
+    formatting_background="#18181B",
+    formatting_border="#3A3A40",
+    quote_border="#A1A1AA",
+    attachment_background="#161618",
+    attachment_border="#2A2A2E",
+    divider_line="#3F3F46",
+    inline_gray="#A1A1AA",
+    inline_blue="#93C5FD",
+    inline_cyan="#67E8F9",
+    inline_green="#86EFAC",
+    inline_yellow="#FDE047",
+    inline_orange="#FDBA74",
+    inline_red="#FCA5A5",
+    inline_purple="#D8B4FE",
+    inline_brown="#D6B08C",
+    inline_pink="#F9A8D4",
     gradient_top="#161618",
     gradient_bottom="#0A0A0B",
     glow_color="#000000",
