@@ -14,8 +14,10 @@ from pathlib import Path
 import objc
 from AppKit import (
     NSAlert,
+    NSAttachmentAttributeName,
     NSAttributedString,
     NSBackgroundColorAttributeName,
+    NSBaselineOffsetAttributeName,
     NSBezierPath,
     NSBoldFontMask,
     NSButton,
@@ -30,6 +32,7 @@ from AppKit import (
     NSImage,
     NSImageOnly,
     NSItalicFontMask,
+    NSKernAttributeName,
     NSLinkAttributeName,
     NSMenu,
     NSMenuItem,
@@ -73,8 +76,11 @@ from ..blocks import (
     convert_selected_blocks,
     empty_return_result,
     insert_block,
+    insert_block_after_selection,
+    merge_empty_block_backward,
     next_block_after_return,
     reorder_blocks,
+    split_block_after_return,
     toggle_todo,
 )
 from ..models import Note, move_transcript_chunk, remove_transcript_chunk
@@ -92,7 +98,7 @@ from ..uihelpers import (
 )
 from .color_palette import build_color_palette_view
 from .controls import FlippedView, label, rounded_view
-from .layout import add, pin_edges, set_height, set_width
+from .layout import MAIN_COLUMN_TOP_INSET, add, pin_edges, set_height, set_width
 from .motion import anim, can_animate, current_policy
 from .motion import run as run_animation  # `run` is a local name in this module
 from .palette import Palette, serif_font, symbol_image
@@ -113,15 +119,20 @@ _ATTR_HIGHLIGHT = "StormPadHighlight"
 _ATTR_LINK = "StormPadLink"
 _ATTR_RAW = "StormPadRaw"
 _ATTR_TRANSCRIPT_CHUNK = "StormPadTranscriptChunk"
+_ATTR_IMAGE_WIDTH = "StormPadImageWidth"
 _ZERO_WIDTH = "\u200b"
 _LINE_SEPARATOR = "\u2028"
 _BODY_INSET = 92.0
+_TODO_TEXT_GAP = 9.0
 # Divider block: a deliberate inset from the writing margins, and the vertical
 # room the rule occupies on its own line.
 _DIVIDER_INSET = 6.0
 _DIVIDER_ROW_HEIGHT = 13.0
 _DIVIDER_MIN_WIDTH = 24.0
 _DIVIDER_THICKNESS = 1.0
+_IMAGE_MIN_WIDTH = 96.0
+_IMAGE_DEFAULT_MAX_WIDTH = 520.0
+_IMAGE_HANDLE_SIZE = 10.0
 
 
 class DividerAttachmentCell(NSTextAttachmentCell):
@@ -170,6 +181,49 @@ class DividerAttachmentCell(NSTextAttachmentCell):
         )
         color.set()
         NSBezierPath.fillRect_(rule)
+
+
+class ImageAttachmentCell(NSTextAttachmentCell):
+    """Width-aware image cell with a restrained selection outline and handle."""
+
+    def initWithImage_width_editor_index_(self, image, width, editor, index):  # noqa: N802
+        self = objc.super(ImageAttachmentCell, self).initImageCell_(image)
+        if self is None:
+            return None
+        source = image.size()
+        self._aspect = max(0.01, float(source.width) / max(1.0, float(source.height)))
+        self.display_width = max(_IMAGE_MIN_WIDTH, float(width))
+        self.editor = editor
+        self.block_index = int(index)
+        return self
+
+    def cellSize(self):  # noqa: N802
+        return NSMakeSize(self.display_width, self.display_width / self._aspect)
+
+    def cellFrameForTextContainer_proposedLineFragment_glyphPosition_characterIndex_(  # noqa: N802
+        self, container, line_fragment, position, char_index
+    ):
+        available = max(
+            _IMAGE_MIN_WIDTH,
+            float(line_fragment.size.width) - float(position.x),
+        )
+        width = min(float(self.display_width), available)
+        return NSMakeRect(0.0, 0.0, width, width / self._aspect)
+
+    def drawWithFrame_inView_(self, frame, view):  # noqa: N802
+        objc.super(ImageAttachmentCell, self).drawWithFrame_inView_(frame, view)
+        editor = getattr(self, "editor", None)
+        if editor is None or editor._selected_image_index != self.block_index:
+            return
+        editor._palette.accent.colorWithAlphaComponent_(0.72).set()
+        NSBezierPath.strokeRect_(frame)
+        handle = NSMakeRect(
+            float(frame.origin.x + frame.size.width - _IMAGE_HANDLE_SIZE),
+            float(frame.origin.y + frame.size.height - _IMAGE_HANDLE_SIZE),
+            _IMAGE_HANDLE_SIZE,
+            _IMAGE_HANDLE_SIZE,
+        )
+        NSBezierPath.fillRect_(handle)
 _BLOCK_MENU: tuple[tuple[str, BlockType, str], ...] = (
     ("Text", BlockType.TEXT, "text.alignleft"),
     ("Heading 1", BlockType.HEADING_1, "textformat.size.larger"),
@@ -322,8 +376,38 @@ def _utf16_length(value: str) -> int:
     return len(value.encode("utf-16-le")) // 2
 
 
+def _python_offset_from_utf16(value: str, offset: int) -> int:
+    """Map an AppKit UTF-16 offset onto a safe Python string boundary."""
+    target = max(0, int(offset))
+    consumed = 0
+    for index, character in enumerate(value):
+        next_consumed = consumed + _utf16_length(character)
+        if next_consumed > target:
+            return index
+        consumed = next_consumed
+    return len(value)
+
+
+def editable_prefix_end(
+    decoration: str | None,
+    line_start: int,
+    decorated_end: int,
+    line_end: int,
+) -> int:
+    """To-do caret floor; the checkbox decoration is never editable text."""
+    if decoration != "todo":
+        return int(line_start)
+    return min(int(line_end), max(int(line_start), int(decorated_end)))
+
+
 class BlockTextView(NSTextView):
     """NSTextView with local file-drop and to-do click handling."""
+
+    def initWithFrame_(self, frame):  # noqa: N802
+        self = objc.super(BlockTextView, self).initWithFrame_(frame)
+        if self is not None:
+            self._image_resize = None
+        return self
 
     def draggingEntered_(self, sender):  # noqa: N802
         pasteboard = sender.draggingPasteboard()
@@ -348,7 +432,69 @@ class BlockTextView(NSTextView):
             point = self.convertPoint_fromView_(event.locationInWindow(), None)
             try:
                 index = self.characterIndexForInsertionAtPoint_(point)
+                index = min(int(index), max(0, int(self.textStorage().length()) - 1))
+                lines = str(self.string()).split("\n")
+                block_index = block_index_for_location(str(self.string()), index)
+                line_start = sum(
+                    _utf16_length(line) + 1 for line in lines[:block_index]
+                )
+                line_attrs = self.textStorage().attributesAtIndex_effectiveRange_(
+                    min(line_start, self.textStorage().length() - 1), None
+                )[0]
+                if line_attrs.get(_ATTR_DECORATION) == "todo":
+                    layout = self.layoutManager()
+                    glyph = layout.glyphRangeForCharacterRange_actualCharacterRange_(
+                        NSMakeRange(line_start, 1), None
+                    )
+                    if isinstance(glyph, tuple):
+                        glyph = glyph[0]
+                    hit = layout.boundingRectForGlyphRange_inTextContainer_(
+                        glyph, self.textContainer()
+                    )
+                    inset = self.textContainerInset()
+                    if (
+                        float(hit.origin.x + inset.width) - 4.0
+                        <= float(point.x)
+                        <= float(hit.origin.x + inset.width + hit.size.width) + 4.0
+                        and float(hit.origin.y + inset.height) - 4.0
+                        <= float(point.y)
+                        <= float(hit.origin.y + inset.height + hit.size.height) + 4.0
+                    ):
+                        editor.toggle_todo_at_location(line_start)
+                        return
                 attrs = self.textStorage().attributesAtIndex_effectiveRange_(index, None)[0]
+                if attrs.get(_ATTR_BLOCK) == BlockType.IMAGE.value:
+                    editor._selected_image_index = block_index
+                    self.setSelectedRange_(NSMakeRange(index, 1))
+                    self.setNeedsDisplay_(True)
+                    attachment = attrs.get(NSAttachmentAttributeName)
+                    cell = attachment.attachmentCell() if attachment is not None else None
+                    if cell is not None:
+                        layout = self.layoutManager()
+                        glyph = layout.glyphRangeForCharacterRange_actualCharacterRange_(
+                            NSMakeRange(index, 1), None
+                        )
+                        if isinstance(glyph, tuple):
+                            glyph = glyph[0]
+                        frame = layout.boundingRectForGlyphRange_inTextContainer_(
+                            glyph, self.textContainer()
+                        )
+                        inset = self.textContainerInset()
+                        max_x = float(frame.origin.x + inset.width + frame.size.width)
+                        max_y = float(frame.origin.y + inset.height + frame.size.height)
+                        if (
+                            float(point.x) >= max_x - 18.0
+                            and float(point.y) >= max_y - 18.0
+                        ):
+                            self._image_resize = (
+                                block_index,
+                                index,
+                                float(point.x),
+                                float(cell.display_width),
+                                cell,
+                            )
+                    return
+                editor._selected_image_index = None
                 if attrs.get(_ATTR_DECORATION) == "todo":
                     editor.toggle_todo_at_location(index)
                     return
@@ -367,6 +513,33 @@ class BlockTextView(NSTextView):
             except (IndexError, TypeError, ValueError):
                 pass
         objc.super(BlockTextView, self).mouseDown_(event)
+
+    def mouseDragged_(self, event):  # noqa: N802
+        if self._image_resize is None:
+            objc.super(BlockTextView, self).mouseDragged_(event)
+            return
+        block_index, character_index, start_x, start_width, cell = self._image_resize
+        point = self.convertPoint_fromView_(event.locationInWindow(), None)
+        usable = max(
+            _IMAGE_MIN_WIDTH,
+            float(self.textContainer().containerSize().width) - 8.0,
+        )
+        width = min(usable, max(_IMAGE_MIN_WIDTH, start_width + float(point.x) - start_x))
+        cell.display_width = width
+        self.layoutManager().invalidateLayoutForCharacterRange_actualCharacterRange_(
+            NSMakeRange(character_index, 1), None
+        )
+        self.setNeedsDisplay_(True)
+
+    def mouseUp_(self, event):  # noqa: N802
+        if self._image_resize is None:
+            objc.super(BlockTextView, self).mouseUp_(event)
+            return
+        block_index, _character_index, _start_x, _start_width, cell = self._image_resize
+        self._image_resize = None
+        editor = getattr(self, "stormpad_editor", None)
+        if editor is not None:
+            editor.persist_image_width(block_index, float(cell.display_width))
 
     def scrollWheel_(self, event):  # noqa: N802
         objc.super(BlockTextView, self).scrollWheel_(event)
@@ -397,12 +570,17 @@ class Editor(NSObject):
         self._command_selection: tuple[int, int] | None = None
         self._context_block_index: int | None = None
         self._context_transcript_chunk: int | None = None
+        self._selected_image_index: int | None = None
         self._block_controls_enabled = True
         self._gutter_token = AnimationToken()
         self._block_menu = None
         self._color_menu = None
         self._color_recents: list[str] = []
         self.on_color_used = None
+        self.before_structural_return: Callable[[], None] | None = None
+        self._pending_return_token = 0
+        self._pending_return_timer = None
+        self._pending_return_note_id: str | None = None
         self._full_note_selected = False
         self._setting_full_note_selection = False
         self.notes_dir: Path | None = None
@@ -435,7 +613,14 @@ class Editor(NSObject):
         title.setFocusRingType_(1)
         title.setAccessibilityLabel_("Note title")
         add(self.view, title)
-        pin_edges(title, self.view, top=44, leading=_BODY_INSET, trailing=_BODY_INSET, bottom=None)
+        pin_edges(
+            title,
+            self.view,
+            top=MAIN_COLUMN_TOP_INSET,
+            leading=_BODY_INSET,
+            trailing=_BODY_INSET,
+            bottom=None,
+        )
         set_height(title, 48)
         self._title = title
 
@@ -446,7 +631,14 @@ class Editor(NSObject):
         scroll.setAutohidesScrollers_(True)
         if hasattr(scroll, "setScrollerStyle_"):
             scroll.setScrollerStyle_(NSScrollerStyleOverlay)
-        pin_edges(scroll, self.view, top=102, leading=52, trailing=52, bottom=18)
+        pin_edges(
+            scroll,
+            self.view,
+            top=MAIN_COLUMN_TOP_INSET + 58,
+            leading=52,
+            trailing=52,
+            bottom=18,
+        )
 
         body = BlockTextView.alloc().initWithFrame_(NSMakeRect(0, 0, 500, 500))
         body.stormpad_editor = self
@@ -581,6 +773,7 @@ class Editor(NSObject):
 
     @objc.python_method
     def load_note(self, note: Note) -> None:
+        self._cancel_pending_return()
         self._loading = True
         try:
             self._clear_full_note_selection_visual()
@@ -608,6 +801,7 @@ class Editor(NSObject):
             self._loading = False
 
     def clear(self) -> None:
+        self._cancel_pending_return()
         self._clear_full_note_selection_visual()
         self._current = None
         self.view.setHidden_(True)
@@ -651,7 +845,7 @@ class Editor(NSObject):
                 result.appendAttributedString_(
                     NSAttributedString.alloc().initWithString_attributes_("\n", previous_attrs)
                 )
-            result.appendAttributedString_(self._attributed_block(block))
+            result.appendAttributedString_(self._attributed_block(block, index))
         was_loading = self._loading
         self._loading = True
         try:
@@ -675,18 +869,21 @@ class Editor(NSObject):
         try:
             self._body.textStorage().setAttributedString_(payload["text"])
             self.restore_selection(tuple(payload["selection"]))
+            self._sync_selected_image_from_selection()
         finally:
             self._loading = False
         self._emit_body_change()
 
-    def _attributed_block(self, block: Block) -> NSMutableAttributedString:
+    def _attributed_block(
+        self, block: Block, block_index: int = 0
+    ) -> NSMutableAttributedString:
         attrs = self._block_base_attributes(block)
         result = NSMutableAttributedString.alloc().init()
 
         prefix = ""
         decoration = None
         if block.kind == BlockType.TODO:
-            prefix, decoration = ("☑ " if block.checked else "☐ "), "todo"
+            prefix, decoration = ("☑" if block.checked else "☐"), "todo"
         elif block.kind == BlockType.BULLET:
             prefix, decoration = "• ", "prefix"
         elif block.kind == BlockType.NUMBERED:
@@ -698,6 +895,14 @@ class Editor(NSObject):
         if prefix:
             prefix_attrs = dict(attrs)
             prefix_attrs[_ATTR_DECORATION] = decoration
+            if decoration == "todo":
+                # A 19 pt square stays native and restrained. Kerning creates
+                # the visual text gap without adding content padding.
+                prefix_attrs[NSFontAttributeName] = NSFont.systemFontOfSize_(19.0)
+                prefix_attrs[NSBaselineOffsetAttributeName] = -1.0
+                # A typographic gap, not content: Markdown and extracted text
+                # contain no padding spaces, while checked/unchecked align.
+                prefix_attrs[NSKernAttributeName] = _TODO_TEXT_GAP
             result.appendAttributedString_(
                 NSAttributedString.alloc().initWithString_attributes_(prefix, prefix_attrs)
             )
@@ -800,7 +1005,11 @@ class Editor(NSObject):
             return result
 
         if block.kind == BlockType.IMAGE and block.target:
-            attachment = self._image_attachment(block.target)
+            attachment = self._image_attachment(
+                block.target,
+                block.display_width,
+                block_index,
+            )
             if attachment is not None:
                 image_string = NSAttributedString.attributedStringWithAttachment_(
                     attachment
@@ -840,7 +1049,12 @@ class Editor(NSObject):
             )
         return result
 
-    def _image_attachment(self, relative: str):
+    def _image_attachment(
+        self,
+        relative: str,
+        display_width: float | None,
+        block_index: int,
+    ):
         if self._current is None:
             return None
         path = (self._current.path.parent / relative).resolve()
@@ -848,14 +1062,16 @@ class Editor(NSObject):
         if image is None:
             return None
         size = image.size()
-        if size.width > 520:
-            ratio = 520.0 / size.width
-            image.setSize_(NSMakeSize(520.0, max(1.0, size.height * ratio)))
+        width = display_width or min(float(size.width), _IMAGE_DEFAULT_MAX_WIDTH)
         attachment = NSTextAttachment.alloc().init()
-        if hasattr(attachment, "setImage_"):
-            attachment.setImage_(image)
-        elif attachment.attachmentCell() is not None:
-            attachment.attachmentCell().setImage_(image)
+        attachment.setAttachmentCell_(
+            ImageAttachmentCell.alloc().initWithImage_width_editor_index_(
+                image,
+                width,
+                self,
+                block_index,
+            )
+        )
         return attachment
 
     def _file_detail(self, relative: str) -> str:
@@ -911,6 +1127,7 @@ class Editor(NSObject):
             _ATTR_ALT: block.alt or "",
             _ATTR_COLLAPSED: bool(block.collapsed),
             _ATTR_RAW: block.raw or "",
+            _ATTR_IMAGE_WIDTH: block.display_width or 0.0,
         }
 
     def _inline_attributes(self, base: dict, run: InlineRun) -> dict:
@@ -1037,6 +1254,11 @@ class Editor(NSObject):
                 target=str(attrs.get(_ATTR_TARGET) or "") or None,
                 alt=str(attrs.get(_ATTR_ALT) or "") or None,
                 collapsed=bool(attrs.get(_ATTR_COLLAPSED, False)),
+                display_width=(
+                    float(attrs.get(_ATTR_IMAGE_WIDTH))
+                    if float(attrs.get(_ATTR_IMAGE_WIDTH, 0.0) or 0.0) > 0.0
+                    else None
+                ),
             )
             if kind == BlockType.RAW:
                 block.raw = block.text
@@ -1200,6 +1422,56 @@ class Editor(NSObject):
         self._body.setSelectedRange_(
             NSMakeRange(location + _utf16_length(line), 0 if visible else 0)
         )
+
+    def _select_block_start(self, index: int) -> None:
+        lines = str(self._body.string()).split("\n")
+        index = min(max(index, 0), max(0, len(lines) - 1))
+        location = sum(_utf16_length(line) + 1 for line in lines[:index])
+        self._body.setSelectedRange_(
+            NSMakeRange(self._editable_block_start(index, location), 0)
+        )
+
+    def _editable_block_start(self, index: int, location: int | None = None) -> int:
+        """First caret position after a non-content block prefix."""
+        lines = str(self._body.string()).split("\n")
+        index = min(max(int(index), 0), max(0, len(lines) - 1))
+        start = (
+            int(location)
+            if location is not None
+            else sum(_utf16_length(line) + 1 for line in lines[:index])
+        )
+        storage = self._body.textStorage()
+        if start >= int(storage.length()):
+            return start
+        try:
+            attrs, effective = storage.attributesAtIndex_effectiveRange_(start, None)
+        except (IndexError, TypeError, ValueError):
+            return start
+        line_end = start + _utf16_length(lines[index])
+        return editable_prefix_end(
+            attrs.get(_ATTR_DECORATION),
+            start,
+            int(effective.location + effective.length),
+            line_end,
+        )
+
+    def _sync_selected_image_from_selection(self) -> None:
+        selected = self._body.selectedRange()
+        self._selected_image_index = None
+        if int(selected.length) != 1 or self._body.textStorage().length() == 0:
+            return
+        probe = min(int(selected.location), self._body.textStorage().length() - 1)
+        try:
+            attrs = self._body.textStorage().attributesAtIndex_effectiveRange_(
+                probe, None
+            )[0]
+            if attrs.get(_ATTR_BLOCK) == BlockType.IMAGE.value:
+                self._selected_image_index = block_index_for_location(
+                    str(self._body.string()), probe
+                )
+        except (IndexError, TypeError, ValueError):
+            pass
+        self._body.setNeedsDisplay_(True)
 
     def _set_gutter_hidden(self, hidden: bool) -> None:
         should_hide = hidden or not self._block_controls_enabled
@@ -1928,6 +2200,160 @@ class Editor(NSObject):
     def textDidEndEditing_(self, notification):  # noqa: N802
         self._formatting.setHidden_(True)
 
+    @objc.python_method
+    def _authoritative_return_state(self) -> tuple[list[Block], tuple[int, int]]:
+        """Snapshot only the current AppKit storage and NSTextView selection."""
+        if self._body.hasMarkedText():
+            self._body.unmarkText()
+
+        storage = self._body.textStorage()
+        length = int(storage.length())
+        if hasattr(storage, "ensureAttributesAreFixedInRange_"):
+            storage.ensureAttributesAreFixedInRange_(NSMakeRange(0, length))
+        self._body.layoutManager().ensureLayoutForTextContainer_(
+            self._body.textContainer()
+        )
+
+        selected = self._body.selectedRange()
+        location = int(selected.location)
+        span = int(selected.length)
+        if location < 0 or location > length or span < 0 or location + span > length:
+            location = min(max(location, 0), length)
+            span = min(max(span, 0), length - location)
+        return self._extract_blocks(), (location, span)
+
+    @objc.python_method
+    def _cancel_pending_return(self) -> None:
+        self._pending_return_token += 1
+        timer = self._pending_return_timer
+        self._pending_return_timer = None
+        self._pending_return_note_id = None
+        if timer is not None:
+            timer.invalidate()
+
+    @objc.python_method
+    def _return_context_is_active(self, note_id: str | None, text_view) -> bool:
+        current_id = self._current.id if self._current is not None else None
+        return (
+            text_view is self._body
+            and current_id == note_id
+            and self.body_is_first_responder()
+        )
+
+    @objc.python_method
+    def _schedule_structural_return(self, text_view) -> None:
+        """Consume Return now and split from live AppKit state next run-loop turn."""
+        self._cancel_pending_return()
+        token = self._pending_return_token
+        note_id = self._current.id if self._current is not None else None
+        self._pending_return_note_id = note_id
+
+        def fire(_timer):
+            self._perform_pending_structural_return(token, note_id, text_view)
+
+        self._pending_return_timer = (
+            NSTimer.scheduledTimerWithTimeInterval_repeats_block_(
+                0.0,
+                False,
+                fire,
+            )
+        )
+
+    @objc.python_method
+    def _flush_pending_return_text_change(self) -> None:
+        # The next-turn boundary makes the final key authoritative in storage.
+        # Emit from that storage before autosave is flushed so persistence sees
+        # the same complete text that the structural split will consume.
+        self._emit_body_change()
+        if self.before_structural_return is not None:
+            self.before_structural_return()
+
+    @objc.python_method
+    def _perform_pending_structural_return(
+        self,
+        token: int,
+        note_id: str | None,
+        text_view,
+    ) -> None:
+        if token != self._pending_return_token:
+            return
+        try:
+            if not self._return_context_is_active(note_id, text_view):
+                return
+            self._flush_pending_return_text_change()
+            if not self._return_context_is_active(note_id, text_view):
+                return
+            blocks, selection = self._authoritative_return_state()
+            self._apply_structural_return(blocks, selection)
+        finally:
+            if token == self._pending_return_token:
+                self._pending_return_token += 1
+                self._pending_return_timer = None
+                self._pending_return_note_id = None
+
+    @objc.python_method
+    def _apply_structural_return(
+        self,
+        blocks: list[Block],
+        selection: tuple[int, int],
+    ) -> None:
+        """Apply one structural Return from an authoritative live snapshot."""
+        index = min(
+            block_index_for_location(str(self._body.string()), selection[0]),
+            len(blocks) - 1,
+        )
+        block = blocks[index]
+        if selection[1] > 0:
+            indices = block_indices_for_selection(
+                str(self._body.string()), selection[0], selection[1]
+            )
+            blocks, destination = insert_block_after_selection(blocks, indices)
+            self._replace_document(
+                blocks,
+                register_undo=True,
+                focus_index=None,
+            )
+            self._select_block_start(destination)
+            self.focus_body()
+            return
+        if block.is_empty and block.kind != BlockType.TEXT:
+            blocks[index] = empty_return_result(block)
+            self._replace_document(blocks, register_undo=True, focus_index=index)
+            return
+
+        if block.kind in PARAGRAPH_BLOCK_TYPES:
+            lines = str(self._body.string()).split("\n")
+            line_start = sum(_utf16_length(line) + 1 for line in lines[:index])
+            display = lines[index] if index < len(lines) else ""
+            prefix_length = max(
+                0,
+                _utf16_length(display) - _utf16_length(block.text),
+            )
+            text_offset = max(
+                0,
+                int(selection[0]) - line_start - prefix_length,
+            )
+            first, second = split_block_after_return(
+                block,
+                _python_offset_from_utf16(block.text, text_offset),
+            )
+            blocks[index] = first
+            blocks.insert(index + 1, second)
+            destination = index + 1
+        else:
+            blocks, destination = insert_block(
+                blocks,
+                index,
+                next_block_after_return(block),
+            )
+        self._replace_document(
+            blocks,
+            register_undo=True,
+            focus_index=None,
+        )
+        self._select_block_start(destination)
+        self.focus_body()
+
     def control_textView_doCommandBySelector_(  # noqa: N802
         self, control, text_view, selector
     ):
@@ -1951,6 +2377,33 @@ class Editor(NSObject):
             if selected != (0, int(self._body.string().length())):
                 self._clear_full_note_selection_visual()
         selected = self._body.selectedRange()
+        if int(selected.length) == 0 and self._body.textStorage().length() > 0:
+            block_index = block_index_for_location(
+                str(self._body.string()), int(selected.location)
+            )
+            editable_start = self._editable_block_start(block_index)
+            if int(selected.location) < editable_start:
+                self._body.setSelectedRange_(NSMakeRange(editable_start, 0))
+                selected = self._body.selectedRange()
+        if self._selected_image_index is not None:
+            probe = min(
+                int(selected.location),
+                max(0, int(self._body.textStorage().length()) - 1),
+            )
+            try:
+                attrs = self._body.textStorage().attributesAtIndex_effectiveRange_(
+                    probe, None
+                )[0]
+                if (
+                    int(selected.length) != 1
+                    or attrs.get(_ATTR_BLOCK) != BlockType.IMAGE.value
+                ):
+                    self._selected_image_index = None
+                    self._body.setNeedsDisplay_(True)
+            except (IndexError, TypeError, ValueError):
+                self._selected_image_index = None
+        if not self._loading:
+            self._normalize_typing_attributes()
         show_formatting = formatting_toolbar_visible(
             selection_length=int(selected.length),
             editor_focused=self.body_is_first_responder(),
@@ -1958,6 +2411,33 @@ class Editor(NSObject):
         self._formatting.setHidden_(not show_formatting)
         if show_formatting:
             self._position_formatting_toolbar()
+
+    @objc.python_method
+    def _normalize_typing_attributes(self) -> None:
+        """Stop typed text from inheriting a block's leading decoration.
+
+        A To-do/bullet/quote/file prefix (e.g. the ``☐`` checkbox glyph) carries
+        ``_ATTR_DECORATION`` and a larger prefix font. When the caret sits just
+        after the prefix — the common case right after typing the first character
+        — NSTextView derives its typing attributes from that decorated prefix, so
+        the newly typed text is tagged as decoration and later dropped by
+        ``_extract_blocks`` (losing the whole line on Return or autosave).
+        Rewriting the typing attributes to the block's clean content attributes
+        keeps typed text as real content.
+        """
+        typing = self._body.typingAttributes()
+        if not typing or typing.get(_ATTR_DECORATION) not in ("todo", "prefix"):
+            return
+        try:
+            kind = BlockType(str(_attr_value(typing, _ATTR_BLOCK, BlockType.TEXT.value)))
+        except ValueError:
+            kind = BlockType.TEXT
+        block = Block(
+            kind=kind,
+            checked=bool(typing.get(_ATTR_CHECKED, False)),
+            indent=int(typing.get(_ATTR_INDENT, 0) or 0),
+        )
+        self._body.setTypingAttributes_(self._block_base_attributes(block))
 
     def _position_formatting_toolbar(self) -> None:
         selected = self._body.selectedRange()
@@ -2003,66 +2483,28 @@ class Editor(NSObject):
             if self._full_note_selected:
                 self.clear_note_content()
                 return True
+            if self._selected_image_index is not None:
+                self._remove_attachment_at_index(self._selected_image_index)
+                return True
+        if command == "insertNewline:":
+            self._schedule_structural_return(text_view)
+            return True
         blocks = self._extract_blocks()
         index = min(self._current_block_index(), len(blocks) - 1)
         block = blocks[index]
-        if command == "insertNewline:":
-            if block.is_empty and block.kind != BlockType.TEXT:
-                blocks[index] = empty_return_result(block)
+        if command == "deleteBackward:" and block.is_empty:
+            if index > 0:
+                blocks, destination = merge_empty_block_backward(blocks, index)
+                self._replace_document(
+                    blocks,
+                    register_undo=True,
+                    focus_index=destination,
+                )
+                return True
+            if block.kind != BlockType.TEXT:
+                blocks[index] = backspace_empty_result(block)
                 self._replace_document(blocks, register_undo=True, focus_index=index)
                 return True
-
-            # Commit the native replacement first. Reconstructing from the
-            # pre-newline semantic snapshot can discard marked/just-typed text
-            # and cannot honor a selected range. The post-edit text storage is
-            # the only source used for the structural continuation below.
-            storage = self._body.textStorage()
-            snapshot = storage.copy()
-            selection = self.body_selected_range()
-            manager = self._body.undoManager()
-            manager.disableUndoRegistration()
-            try:
-                self._body.insertText_replacementRange_(
-                    "\n",
-                    NSMakeRange(selection[0], selection[1]),
-                )
-            finally:
-                manager.enableUndoRegistration()
-
-            post_blocks = self._extract_blocks()
-            destination = min(index + 1, len(post_blocks) - 1)
-            if destination <= index:
-                # Defensive fallback for an unexpected text-system refusal.
-                post_blocks, destination = insert_block(
-                    post_blocks,
-                    index,
-                    next_block_after_return(block),
-                )
-            else:
-                continuation = next_block_after_return(block)
-                continuation.runs = list(post_blocks[destination].runs)
-                post_blocks[destination] = continuation
-            # Replacing the attributed document invalidates NSTextView's
-            # internal character-range undo records from the preceding typing
-            # burst. Keep one coherent structural snapshot instead of leaving
-            # an out-of-bounds native undo action on the stack.
-            manager.removeAllActions()
-            manager.registerUndoWithTarget_selector_object_(
-                self,
-                "restoreDocument:",
-                {"text": snapshot, "selection": selection},
-            )
-            manager.setActionName_("Insert Newline")
-            self._replace_document(
-                post_blocks,
-                register_undo=False,
-                focus_index=destination,
-            )
-            return True
-        if command == "deleteBackward:" and block.is_empty and block.kind != BlockType.TEXT:
-            blocks[index] = backspace_empty_result(block)
-            self._replace_document(blocks, register_undo=True, focus_index=index)
-            return True
         if command in ("insertTab:", "insertBacktab:") and block.kind in (
             BlockType.BULLET,
             BlockType.NUMBERED,
@@ -2107,22 +2549,42 @@ class Editor(NSObject):
             attrs = self._body.textStorage().attributesAtIndex_effectiveRange_(probe, None)[0]
         kind = attrs.get(_ATTR_BLOCK)
         if kind in (BlockType.IMAGE.value, BlockType.FILE.value):
+            if kind == BlockType.IMAGE.value:
+                self._selected_image_index = self._context_block_index
+                self._body.setSelectedRange_(NSMakeRange(int(index), 1))
+                self._body.setNeedsDisplay_(True)
             menu.addItem_(NSMenuItem.separatorItem())
-            if kind == BlockType.FILE.value:
-                open_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
-                    "Open Managed File", "openAttachment:", ""
-                )
-                open_item.setTarget_(self)
-                menu.addItem_(open_item)
+            open_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+                "Open" if kind == BlockType.IMAGE.value else "Open Managed File",
+                "openAttachment:",
+                "",
+            )
+            open_item.setTarget_(self)
+            open_item.setRepresentedObject_(self._context_block_index)
+            menu.addItem_(open_item)
             reveal = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
-                "Reveal Managed Attachment", "revealAttachment:", ""
+                (
+                    "Reveal in Finder"
+                    if kind == BlockType.IMAGE.value
+                    else "Reveal Managed Attachment"
+                ),
+                "revealAttachment:",
+                "",
             )
             reveal.setTarget_(self)
+            reveal.setRepresentedObject_(self._context_block_index)
             menu.addItem_(reveal)
             remove = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
-                "Remove Attachment Block", "removeAttachmentBlock:", ""
+                (
+                    "Remove Image"
+                    if kind == BlockType.IMAGE.value
+                    else "Remove Attachment Block"
+                ),
+                "removeAttachmentBlock:",
+                "",
             )
             remove.setTarget_(self)
+            remove.setRepresentedObject_(self._context_block_index)
             menu.addItem_(remove)
         if kind == BlockType.TRANSCRIPT.value:
             chunk_index = attrs.get(_ATTR_TRANSCRIPT_CHUNK)
@@ -2273,11 +2735,19 @@ class Editor(NSObject):
             return
         self._replace_document(blocks, register_undo=False, focus_index=index)
 
-    def _current_attachment_path(self) -> tuple[Path | None, str | None]:
+    def _attachment_index_from_sender(self, sender) -> int:
+        represented = sender.representedObject() if sender is not None else None
+        if represented is not None:
+            return int(represented)
+        return self._current_block_index()
+
+    def _attachment_path_at_index(
+        self, index: int
+    ) -> tuple[Path | None, str | None]:
         if self._current is None:
             return None, None
         blocks = self._extract_blocks()
-        index = min(self._current_block_index(), len(blocks) - 1)
+        index = min(max(index, 0), len(blocks) - 1)
         target = blocks[index].target
         if not target:
             return None, None
@@ -2292,13 +2762,17 @@ class Editor(NSObject):
 
     @objc.IBAction
     def openAttachment_(self, sender):  # noqa: N802
-        path, _target = self._current_attachment_path()
+        path, _target = self._attachment_path_at_index(
+            self._attachment_index_from_sender(sender)
+        )
         if path is not None and path.exists():
             NSWorkspace.sharedWorkspace().openURL_(NSURL.fileURLWithPath_(str(path)))
 
     @objc.IBAction
     def revealAttachment_(self, sender):  # noqa: N802
-        path, _target = self._current_attachment_path()
+        path, _target = self._attachment_path_at_index(
+            self._attachment_index_from_sender(sender)
+        )
         if path is not None and path.exists():
             NSWorkspace.sharedWorkspace().activateFileViewerSelectingURLs_(
                 [NSURL.fileURLWithPath_(str(path))]
@@ -2306,10 +2780,14 @@ class Editor(NSObject):
 
     @objc.IBAction
     def removeAttachmentBlock_(self, sender):  # noqa: N802
+        self._remove_attachment_at_index(self._attachment_index_from_sender(sender))
+
+    @objc.python_method
+    def _remove_attachment_at_index(self, index: int) -> None:
         if self._current is None:
             return
         blocks = self._extract_blocks()
-        index = min(self._current_block_index(), len(blocks) - 1)
+        index = min(max(index, 0), len(blocks) - 1)
         block = blocks[index]
         if block.kind not in (BlockType.IMAGE, BlockType.FILE) or not block.target:
             return
@@ -2321,11 +2799,30 @@ class Editor(NSObject):
         blocks.pop(index)
         if not blocks:
             blocks = [Block()]
+        self._selected_image_index = None
         self._replace_document(
             blocks,
             register_undo=True,
             focus_index=min(index, len(blocks) - 1),
         )
+
+    @objc.python_method
+    def persist_image_width(self, index: int, width: float) -> None:
+        blocks = self._extract_blocks()
+        if not 0 <= index < len(blocks) or blocks[index].kind != BlockType.IMAGE:
+            return
+        usable = max(
+            _IMAGE_MIN_WIDTH,
+            float(self._body.textContainer().containerSize().width) - 8.0,
+        )
+        blocks[index].display_width = min(usable, max(_IMAGE_MIN_WIDTH, width))
+        self._replace_document(blocks, register_undo=True, focus_index=None)
+        self._selected_image_index = index
+        lines = str(self._body.string()).split("\n")
+        location = sum(_utf16_length(line) + 1 for line in lines[:index])
+        self._body.setSelectedRange_(NSMakeRange(location, 1))
+        self._body.setNeedsDisplay_(True)
+        self.focus_body()
 
     def _emit_body_change(self) -> None:
         if not self._loading:

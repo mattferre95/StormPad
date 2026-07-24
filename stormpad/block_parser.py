@@ -20,6 +20,10 @@ _TODO = re.compile(r"^(\s*)-\s+\[([ xX])\]\s*(.*)$")
 _BULLET = re.compile(r"^(\s*)[-*+]\s+(.*)$")
 _NUMBERED = re.compile(r"^(\s*)\d+[.)]\s+(.*)$")
 _IMAGE = re.compile(r"^!\[([^\]]*)\]\(([^)]+)\)$")
+_IMAGE_METADATA = re.compile(
+    r'^<!--\s*stormpad:image\s+width="([0-9]+(?:\.[0-9]+)?)"\s*-->$',
+    re.IGNORECASE,
+)
 _LINK = re.compile(r"^\[([^\]]*)\]\(([^)]+)\)$")
 _TRANSCRIPT = re.compile(
     r'^<!--\s*stormpad:transcript(?:\s+collapsed="(true|false)")?\s*-->$',
@@ -222,6 +226,23 @@ def parse_blocks(markdown: str) -> list[Block]:
             )
             i += 1
             continue
+
+        image_metadata = _IMAGE_METADATA.match(line.strip())
+        if image_metadata and i + 1 < len(lines):
+            image = _IMAGE.match(lines[i + 1].strip())
+            if image:
+                alt, target = image.groups()
+                blocks.append(
+                    Block(
+                        kind=BlockType.IMAGE,
+                        runs=parse_inline(alt),
+                        alt=alt,
+                        target=unquote(target),
+                        display_width=float(image_metadata.group(1)),
+                    )
+                )
+                i += 2
+                continue
 
         if line.strip() == "---":
             blocks.append(Block(kind=BlockType.DIVIDER))

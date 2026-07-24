@@ -84,6 +84,26 @@ def test_every_non_separator_entry_acts_or_opens_a_submenu():
         assert entry.action or entry.submenu
 
 
+def test_every_top_level_row_carries_an_icon():
+    """The menu reference gives every workspace row a leading SF Symbol."""
+    for entry in profile_menu_spec(_themes()):
+        if entry.is_separator:
+            continue
+        assert entry.icon  # non-empty SF Symbol name
+
+
+def test_settings_and_quit_expose_keyboard_shortcuts():
+    spec = profile_menu_spec(_themes())
+    keys = {e.title: e.key for e in spec if not e.is_separator}
+    assert keys["Settings…"] == ","  # ⌘,
+    assert keys["Quit StormPad"] == "q"  # ⌘Q
+
+
+def test_theme_rows_have_no_icon_reserving_the_checkmark_column():
+    appearance = next(e for e in profile_menu_spec(_themes()) if e.title == "Appearance")
+    assert all(not entry.icon for entry in appearance.submenu)
+
+
 def test_no_account_subscription_or_cloud_affordances():
     """StormPad has no accounts; the row must not imply otherwise."""
     banned = (

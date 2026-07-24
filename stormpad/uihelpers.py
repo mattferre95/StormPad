@@ -75,6 +75,63 @@ def copy_text(note: Note) -> str:
     return note_to_plain_text(note)
 
 
+@dataclass(frozen=True)
+class DeleteConfirmation:
+    """Copy for the delete-confirmation dialog (pure, so it is testable)."""
+
+    title: str
+    message: str
+    confirm_button: str
+    cancel_button: str = "Cancel"
+
+
+def delete_confirmation(count: int, *, single_title: str | None = None) -> DeleteConfirmation:
+    """Confirmation copy for deleting ``count`` selected notes.
+
+    One note keeps the existing singular language ("Delete "Title"?"); multiple
+    notes use the plural "Remove selected notes?" wording. Both delete through
+    the same safe macOS-Trash path, so both promise recoverability.
+    """
+    if count <= 1:
+        title = f"Delete “{single_title or 'Untitled Note'}”?"
+        return DeleteConfirmation(
+            title=title,
+            message="This note will be moved to the Trash.",
+            confirm_button="Delete",
+        )
+    return DeleteConfirmation(
+        title="Remove selected notes?",
+        message=(
+            f"Are you sure you want to remove these {count} notes? "
+            "This action can be undone from the Trash."
+        ),
+        confirm_button="Remove Notes",
+    )
+
+
+def select_after_bulk_delete(
+    displayed: list[Note], deleted_ids: set[str]
+) -> str | None:
+    """Nearest remaining visible note after removing ``deleted_ids``.
+
+    Prefers the first survivor at or after the earliest deleted position, then
+    falls back to the last survivor before it, then to ``None`` (empty state).
+    ``displayed`` is the pre-delete visible order.
+    """
+    first_removed = next(
+        (i for i, note in enumerate(displayed) if note.id in deleted_ids), None
+    )
+    if first_removed is None:
+        return displayed[0].id if displayed else None
+    for note in displayed[first_removed:]:
+        if note.id not in deleted_ids:
+            return note.id
+    for note in reversed(displayed[:first_removed]):
+        if note.id not in deleted_ids:
+            return note.id
+    return None
+
+
 def next_selection_after_delete(displayed: list[Note], deleted_id: str) -> str | None:
     """Choose the note to select after deleting ``deleted_id``.
 
@@ -234,12 +291,19 @@ def profile_display_name(full_name: str | None) -> str:
 
 @dataclass(frozen=True)
 class MenuEntry:
-    """One row of a declarative menu spec (a title of ``None`` is a separator)."""
+    """One row of a declarative menu spec (a title of ``None`` is a separator).
+
+    ``icon`` is an SF Symbol name (tinted with the theme accent when rendered);
+    ``key`` is a single-character keyboard equivalent (⌘ modifier, shown as a
+    trailing shortcut hint).
+    """
 
     title: str | None
     action: str | None = None
     represented: str | None = None
     submenu: tuple[MenuEntry, ...] = ()
+    icon: str | None = None
+    key: str = ""
 
     @property
     def is_separator(self) -> bool:
@@ -255,19 +319,25 @@ def profile_menu_spec(themes: list[tuple[str, str]]) -> tuple[MenuEntry, ...]:
     profile, subscription, or sync.
     """
     return (
-        MenuEntry("Settings…", "showSettings:"),
+        MenuEntry("Settings…", "showSettings:", icon="gearshape", key=","),
         MenuEntry(None),
         MenuEntry(
             "Appearance",
+            icon="circle.lefthalf.filled",
             submenu=tuple(
                 MenuEntry(name, "selectTheme:", theme_id) for theme_id, name in themes
             ),
         ),
         MenuEntry(None),
-        MenuEntry("Reveal StormPad Folder", "revealStormPadFolder:"),
-        MenuEntry("About StormPad", "orderFrontStandardAboutPanel:"),
+        MenuEntry("Reveal StormPad Folder", "revealStormPadFolder:", icon="folder"),
+        MenuEntry("About StormPad", "orderFrontStandardAboutPanel:", icon="info.circle"),
         MenuEntry(None),
-        MenuEntry("Quit StormPad", "terminate:"),
+        MenuEntry(
+            "Quit StormPad",
+            "terminate:",
+            icon="rectangle.portrait.and.arrow.right",
+            key="q",
+        ),
     )
 
 

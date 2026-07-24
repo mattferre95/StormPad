@@ -7,14 +7,17 @@ rather than a fixed run of glyphs, and its Markdown stays ``---``.
 
 from __future__ import annotations
 
-from Foundation import NSMakePoint, NSMakeRect
+from AppKit import NSImage
+from Foundation import NSMakePoint, NSMakeRect, NSMakeSize
 
 from stormpad.block_serializer import serialize_blocks
 from stormpad.blocks import Block, BlockType
 from stormpad.views.block_editor import (
     _DIVIDER_INSET,
     _DIVIDER_MIN_WIDTH,
+    _IMAGE_MIN_WIDTH,
     DividerAttachmentCell,
+    ImageAttachmentCell,
 )
 
 
@@ -65,3 +68,28 @@ def test_divider_keeps_inset_from_writing_margins():
 
 def test_divider_markdown_is_unchanged():
     assert serialize_blocks([Block(kind=BlockType.DIVIDER)]).strip() == "---"
+
+
+def test_image_cell_preserves_aspect_ratio_and_clamps_to_editor_width():
+    image = NSImage.alloc().initWithSize_(NSMakeSize(800.0, 400.0))
+    cell = ImageAttachmentCell.alloc().initWithImage_width_editor_index_(
+        image, 600.0, None, 0
+    )
+    wide = cell.cellFrameForTextContainer_proposedLineFragment_glyphPosition_characterIndex_(
+        None, NSMakeRect(0.0, 0.0, 700.0, 20.0), NSMakePoint(0.0, 0.0), 0
+    )
+    narrow = cell.cellFrameForTextContainer_proposedLineFragment_glyphPosition_characterIndex_(
+        None, NSMakeRect(0.0, 0.0, 320.0, 20.0), NSMakePoint(0.0, 0.0), 0
+    )
+    assert (wide.size.width, wide.size.height) == (600.0, 300.0)
+    assert (narrow.size.width, narrow.size.height) == (320.0, 160.0)
+    assert cell.display_width == 600.0
+    assert image.size() == NSMakeSize(800.0, 400.0)
+
+
+def test_image_cell_has_a_sensible_minimum_display_size():
+    image = NSImage.alloc().initWithSize_(NSMakeSize(200.0, 100.0))
+    cell = ImageAttachmentCell.alloc().initWithImage_width_editor_index_(
+        image, 1.0, None, 0
+    )
+    assert cell.cellSize().width == _IMAGE_MIN_WIDTH

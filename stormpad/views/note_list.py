@@ -15,6 +15,8 @@ from AppKit import (
     NSControlSizeSmall,
     NSDragOperationMove,
     NSDragOperationNone,
+    NSEventModifierFlagCommand,
+    NSEventModifierFlagShift,
     NSFont,
     NSGraphicsContext,
     NSImageOnly,
@@ -33,14 +35,14 @@ from AppKit import (
     NSTableViewSelectionHighlightStyleRegular,
     NSView,
 )
-from Foundation import NSIndexSet, NSMakeRect, NSObject
+from Foundation import NSIndexSet, NSMakeRect, NSMutableIndexSet, NSNotFound, NSObject
 
 from ..dragdrop import NOTE_PASTEBOARD_TYPE, encode_drag_payload
 from ..models import Note, now_local
 from ..motion import AnimationToken, Motion
 from ..uihelpers import display_tag, format_relative, preview_text
 from .controls import FlippedView, flipped_view, icon_view, label, rounded_view, solid_view
-from .layout import add, pin_edges, set_height, set_width
+from .layout import MAIN_COLUMN_TOP_INSET, add, pin_edges, set_height, set_width
 from .motion import anim, can_animate, current_policy, run
 from .palette import Palette, symbol_image
 
@@ -51,23 +53,59 @@ _CHEVRON_BUTTON = 28.0  # square hit target
 _CHEVRON_POINT = 13.0  # symbol point size
 
 
+def reconciled_note_selection(
+    visible_ids,
+    selected_ids,
+    active_id: str | None,
+) -> tuple[set[str], str | None]:
+    """Drop hidden UUIDs while retaining a visible active selection."""
+    visible = set(visible_ids)
+    active = active_id if active_id in visible else None
+    selected = {note_id for note_id in selected_ids if note_id in visible}
+    if active is not None:
+        selected.add(active)
+    return selected, active
+
+
+def note_selection_role(
+    note_id: str,
+    selected_ids,
+    active_id: str | None,
+) -> str:
+    if note_id == active_id and note_id in selected_ids:
+        return "active"
+    if note_id in selected_ids:
+        return "secondary"
+    return "normal"
+
+
 class _ThemedRowView(NSTableRowView):
     """Row view that draws the themed selected-background."""
 
-    def initWithPalette_(self, palette):  # noqa: N802
+    def initWithPalette_owner_noteID_(self, palette, owner, note_id):  # noqa: N802
         self = objc.super(_ThemedRowView, self).init()
         if self is None:
             return None
         self._palette = palette
+        self._owner = owner
+        self._note_id = str(note_id)
         return self
 
     def drawSelectionInRect_(self, rect):  # noqa: N802
         if not self.isSelected():
             return
         p = self._palette
+        active = (
+            note_selection_role(
+                self._note_id,
+                self._owner._selected_ids,
+                self._owner._selected_id,
+            )
+            == "active"
+        )
         inset = NSInsetRect(self.bounds(), 8.0, 3.0)
         path = NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(inset, 10.0, 10.0)
-        glow = p.selection_glow(0.55)
+        glow = p.selection_glow(0.55) if active else None
         if glow is not None:
             NSGraphicsContext.saveGraphicsState()
             shadow = NSShadow.alloc().init()
@@ -79,11 +117,21 @@ class _ThemedRowView(NSTableRowView):
             path.fill()
             NSGraphicsContext.restoreGraphicsState()
         else:
-            p.selected_background.set()
+            (
+                p.selected_background
+                if active
+                else p.selected_background.colorWithAlphaComponent_(0.52)
+            ).set()
             path.fill()
-        p.selected_border.set()
+        (
+            p.selected_border
+            if active
+            else p.selected_border.colorWithAlphaComponent_(0.48)
+        ).set()
         path.setLineWidth_(1.0)
         path.stroke()
+        if not active:
+            return
         indicator_rect = NSMakeRect(
             float(inset.origin.x) + 2.0,
             float(inset.origin.y) + 12.0,
@@ -108,10 +156,48 @@ class NoteTableView(NSTableView):
         row = int(self.rowAtPoint_(point))
         if not 0 <= row < len(owner._notes):
             return None
-        self.selectRowIndexes_byExtendingSelection_(
-            NSIndexSet.indexSetWithIndex_(row), False
-        )
+        # Right-clicking a note that is already part of the selection targets the
+        # whole selection; right-clicking any other note first selects just that
+        # note, so a context-menu delete never surprises the user by acting on a
+        # previous range.
+        note_id = owner._notes[row].id
+        if note_id not in owner._selected_ids or self.numberOfSelectedRows() <= 1:
+            self.selectRowIndexes_byExtendingSelection_(
+                NSIndexSet.indexSetWithIndex_(row), False
+            )
         return owner.menu_for_note(owner._notes[row])
+
+    def mouseDown_(self, event):  # noqa: N802
+        owner = getattr(self, "stormpad_owner", None)
+        normal_row = None
+        if owner is not None:
+            flags = int(event.modifierFlags())
+            extending = bool(
+                flags
+                & int(NSEventModifierFlagShift | NSEventModifierFlagCommand)
+            )
+            point = self.convertPoint_fromView_(event.locationInWindow(), None)
+            row = int(self.rowAtPoint_(point))
+            if 0 <= row < len(owner._notes):
+                owner._pending_clicked_row = row
+                if not extending:
+                    normal_row = row
+                    owner.prepare_normal_click()
+        objc.super(NoteTableView, self).mouseDown_(event)
+        if owner is not None and normal_row is not None:
+            owner.commit_normal_click(normal_row)
+
+    def keyDown_(self, event):  # noqa: N802
+        owner = getattr(self, "stormpad_owner", None)
+        chars = str(event.charactersIgnoringModifiers() or "")
+        codes = {ord(ch) for ch in chars}
+        # Delete (Backspace, U+007F) and Forward Delete (NSDeleteFunctionKey,
+        # U+F728) request removal of the current selection through the owner's
+        # confirmed, safe (Trash) delete path.
+        if owner is not None and codes & {0x7F, 0xF728}:
+            owner.request_delete_selection()
+            return
+        objc.super(NoteTableView, self).keyDown_(event)
 
 
 class NoteList(NSObject):
@@ -130,12 +216,18 @@ class NoteList(NSObject):
         self._collapse_token = AnimationToken()
         self._notes: list[Note] = []
         self._selected_id: str | None = None
+        # Multi-selection tracked by stable UUID (never by path or row index).
+        self._selected_ids: set[str] = set()
+        self._on_delete: Callable[[], None] | None = None
         self._suppress = False
         self._collapsed = False
         self._menu_provider = None
         self._dragging_note_id: str | None = None
+        self._pending_clicked_row: int | None = None
+        self._selection_anchor_id: str | None = None
         self._pinned_ids: set[str] = set()
         self._project_names: dict[str, str] = {}
+        self._search_previews: dict[str, str] = {}
         self._on_filter: Callable[[bool], None] | None = None
         self._build()
         return self
@@ -149,9 +241,23 @@ class NoteList(NSObject):
         self._header = add(
             self.view, label("All Notes", NSFont.boldSystemFontOfSize_(18), p.text_primary)
         )
-        pin_edges(self._header, self.view, top=54, leading=20, trailing=20, bottom=None)
+        pin_edges(
+            self._header,
+            self.view,
+            top=MAIN_COLUMN_TOP_INSET,
+            leading=20,
+            trailing=20,
+            bottom=None,
+        )
         self._subtitle = add(self.view, label("", NSFont.systemFontOfSize_(11.5), p.text_muted))
-        pin_edges(self._subtitle, self.view, top=80, leading=20, trailing=20, bottom=None)
+        pin_edges(
+            self._subtitle,
+            self.view,
+            top=MAIN_COLUMN_TOP_INSET + 26,
+            leading=20,
+            trailing=20,
+            bottom=None,
+        )
 
         # Collapse chevron — square hit target, proportional scaling so the SF
         # Symbol keeps its aspect ratio and is never clipped or stretched.
@@ -168,8 +274,14 @@ class NoteList(NSObject):
         collapse.setToolTip_("Collapse Notes")
         collapse.setAccessibilityLabel_("Collapse Notes")
         add(self.view, collapse)
-        # Vertically centred on the "All Notes" header (header top 54, ~22 tall).
-        pin_edges(collapse, self.view, top=51, leading=None, trailing=14, bottom=None)
+        pin_edges(
+            collapse,
+            self.view,
+            top=MAIN_COLUMN_TOP_INSET - 3,
+            leading=None,
+            trailing=14,
+            bottom=None,
+        )
         set_width(collapse, _CHEVRON_BUTTON)
         set_height(collapse, _CHEVRON_BUTTON)
         self._collapse_button = collapse
@@ -186,7 +298,14 @@ class NoteList(NSObject):
         new_note.setToolTip_("New Note")
         new_note.setAccessibilityLabel_("New Note")
         add(self.view, new_note)
-        pin_edges(new_note, self.view, top=51, leading=None, trailing=44, bottom=None)
+        pin_edges(
+            new_note,
+            self.view,
+            top=MAIN_COLUMN_TOP_INSET - 3,
+            leading=None,
+            trailing=44,
+            bottom=None,
+        )
         set_width(new_note, _CHEVRON_BUTTON)
         set_height(new_note, _CHEVRON_BUTTON)
         self._new_note_button = new_note
@@ -206,7 +325,14 @@ class NoteList(NSObject):
         seg.setAccessibilityLabel_("Filter notes: All or Pinned")
         seg.setToolTip_("Show all notes or only pinned notes")
         add(self.view, seg)
-        pin_edges(seg, self.view, top=76, leading=None, trailing=14, bottom=None)
+        pin_edges(
+            seg,
+            self.view,
+            top=MAIN_COLUMN_TOP_INSET + 22,
+            leading=None,
+            trailing=14,
+            bottom=None,
+        )
         set_width(seg, 112)
         set_height(seg, 20)
         self._filter_control = seg
@@ -216,7 +342,14 @@ class NoteList(NSObject):
         scroll.setBorderType_(NSNoBorder)
         scroll.setHasVerticalScroller_(True)
         scroll.setAutohidesScrollers_(True)
-        pin_edges(scroll, self.view, top=104, leading=0, trailing=0, bottom=0)
+        pin_edges(
+            scroll,
+            self.view,
+            top=MAIN_COLUMN_TOP_INSET + 50,
+            leading=0,
+            trailing=0,
+            bottom=0,
+        )
 
         table = NoteTableView.alloc().init()
         table.stormpad_owner = self
@@ -225,6 +358,10 @@ class NoteList(NSObject):
         table.setRowHeight_(78.0)
         table.setSelectionHighlightStyle_(NSTableViewSelectionHighlightStyleRegular)
         table.setIntercellSpacing_((0.0, 2.0))
+        # Native contiguous range selection: a click sets the anchor, Shift-click
+        # extends the range (both directions). Empty clicks keep a selection.
+        table.setAllowsMultipleSelection_(True)
+        table.setAllowsEmptySelection_(True)
         table.setDataSource_(self)
         table.setDelegate_(self)
         table.setAccessibilityLabel_("Notes, rows are drag sources")
@@ -270,18 +407,85 @@ class NoteList(NSObject):
         header: str,
         subtitle: str,
         transition: bool = False,
+        search_previews: dict[str, str] | None = None,
     ) -> None:
         self._notes = notes
+        self._search_previews = dict(search_previews or {})
         self._header.setStringValue_(header)
         self._subtitle.setStringValue_(subtitle)
         # The collapsed control is an image-only chevron: a title would draw on
         # top of the glyph. Surface the count through the tooltip instead.
         self._collapsed_tab.setToolTip_(f"Expand Notes ({len(notes)})")
         self._table.reloadData()
-        if self._selected_id is not None:
-            self.select_note_id(self._selected_id, notify=False)
+        # Reconcile the multi-selection against the notes now visible: any
+        # selected UUID whose note is no longer shown is dropped, so a scope,
+        # filter, or search change can never leave a hidden note silently
+        # selected. Same visible set (e.g. after autosave) keeps the selection.
+        self._reconcile_selection()
         if transition:
             self._fade_in_list()
+
+    @objc.python_method
+    def _reconcile_selection(self) -> None:
+        self._selected_ids, self._selected_id = reconciled_note_selection(
+            (note.id for note in self._notes),
+            self._selected_ids,
+            self._selected_id,
+        )
+        indices = [i for i, n in enumerate(self._notes) if n.id in self._selected_ids]
+        self._suppress = True
+        if indices:
+            index_set = NSMutableIndexSet.alloc().init()
+            for i in indices:
+                index_set.addIndex_(i)
+            self._table.selectRowIndexes_byExtendingSelection_(index_set, False)
+            if self._selected_id is not None:
+                active = next(
+                    (i for i, n in enumerate(self._notes) if n.id == self._selected_id),
+                    None,
+                )
+                if active is not None:
+                    self._table.scrollRowToVisible_(active)
+        else:
+            self._table.deselectAll_(None)
+        self._suppress = False
+        self._table.setNeedsDisplay_(True)
+
+    @objc.python_method
+    def prepare_normal_click(self) -> None:
+        """Clear a previous range before AppKit selects the clicked row."""
+        self._suppress = True
+        self._table.deselectAll_(None)
+        self._suppress = False
+        self._selected_ids.clear()
+
+    @objc.python_method
+    def commit_normal_click(self, row: int) -> None:
+        """Make the completed ordinary click the sole selection source."""
+        if not 0 <= int(row) < len(self._notes):
+            return
+        note_id = self._notes[int(row)].id
+        previous = self._selected_id
+        self._selected_id = note_id
+        self._selected_ids = {note_id}
+        self._selection_anchor_id = note_id
+        self._pending_clicked_row = None
+        self._suppress = True
+        self._table.selectRowIndexes_byExtendingSelection_(
+            NSIndexSet.indexSetWithIndex_(int(row)), False
+        )
+        self._suppress = False
+        self._table.setNeedsDisplay_(True)
+        if previous != note_id:
+            self._on_select(note_id)
+
+    @objc.python_method
+    def restore_active_note_id(self, note_id: str | None) -> None:
+        """Keep an existing visible range only when its active UUID is unchanged."""
+        if note_id == self._selected_id and note_id in self._selected_ids:
+            self._reconcile_selection()
+            return
+        self.select_note_id(note_id, notify=False)
 
     @objc.python_method
     def _fade_in_list(self) -> None:
@@ -397,6 +601,9 @@ class NoteList(NSObject):
     @objc.python_method
     def select_note_id(self, note_id: str | None, *, notify: bool = True) -> None:
         self._selected_id = note_id
+        # A programmatic single-note selection also resets the multi-selection to
+        # just that note, so the anchor and the set stay consistent.
+        self._selected_ids = {note_id} if note_id is not None else set()
         index = next((i for i, n in enumerate(self._notes) if n.id == note_id), None)
         self._suppress = not notify
         if index is None:
@@ -409,8 +616,30 @@ class NoteList(NSObject):
         self._suppress = False
 
     @objc.python_method
+    def set_active_note_id(self, note_id: str | None) -> None:
+        """Track the active (editor-focused) note without touching the table
+        selection or the multi-selection set. Used when the table's own
+        selection change already reflects the user's click/Shift-click.
+        """
+        self._selected_id = note_id
+
+    @objc.python_method
     def selected_note(self) -> Note | None:
         return next((n for n in self._notes if n.id == self._selected_id), None)
+
+    @objc.python_method
+    def selected_note_ids(self) -> list[str]:
+        """Visible selected notes as stable UUIDs, in list order."""
+        return [n.id for n in self._notes if n.id in self._selected_ids]
+
+    @objc.python_method
+    def set_delete_handler(self, handler: Callable[[], None] | None) -> None:
+        self._on_delete = handler
+
+    @objc.python_method
+    def request_delete_selection(self) -> None:
+        if self._on_delete is not None:
+            self._on_delete()
 
     @objc.python_method
     def set_menu_provider(self, provider) -> None:
@@ -426,7 +655,9 @@ class NoteList(NSObject):
         return len(self._notes)
 
     def tableView_rowViewForRow_(self, table, row):  # noqa: N802
-        return _ThemedRowView.alloc().initWithPalette_(self._palette)
+        return _ThemedRowView.alloc().initWithPalette_owner_noteID_(
+            self._palette, self, self._notes[row].id
+        )
 
     def tableView_viewForTableColumn_row_(self, table, column, row):  # noqa: N802
         return self._make_cell(self._notes[row])
@@ -469,11 +700,35 @@ class NoteList(NSObject):
     def tableViewSelectionDidChange_(self, notification):  # noqa: N802
         if self._suppress:
             return
-        row = self._table.selectedRow()
+        # Capture the full selection as stable UUIDs (native shift-click has
+        # already computed the contiguous range).
+        selected = self._table.selectedRowIndexes()
+        ids: set[str] = set()
+        index = selected.firstIndex()
+        while index != NSNotFound and index < len(self._notes):
+            ids.add(self._notes[index].id)
+            index = selected.indexGreaterThanIndex_(index)
+        self._selected_ids = ids
+        # The active/focused note is the clicked row; the editor follows it.
+        pending = self._pending_clicked_row
+        self._pending_clicked_row = None
+        row = (
+            pending
+            if pending is not None
+            and 0 <= pending < len(self._notes)
+            and self._notes[pending].id in ids
+            else self._table.selectedRow()
+        )
         if 0 <= row < len(self._notes):
             note = self._notes[row]
-            self._selected_id = note.id
-            self._on_select(note.id)
+            if len(ids) == 1:
+                self._selection_anchor_id = note.id
+            if note.id != self._selected_id:
+                self._selected_id = note.id
+                self._on_select(note.id)
+        elif not ids:
+            self._selected_id = None
+        self._table.setNeedsDisplay_(True)
 
     # -- cell view -----------------------------------------------------------
 
@@ -508,8 +763,14 @@ class NoteList(NSObject):
             set_width(pin_icon, 14)
             set_height(pin_icon, 13)
 
+        preview_value = self._search_previews.get(note.id) or preview_text(note)
         preview = add(
-            cell, label(preview_text(note), NSFont.systemFontOfSize_(12.5), p.text_secondary)
+            cell,
+            label(
+                preview_value,
+                NSFont.systemFontOfSize_(12.5),
+                p.text_secondary,
+            ),
         )
         pin_edges(preview, cell, top=34, leading=16, trailing=16, bottom=None)
 

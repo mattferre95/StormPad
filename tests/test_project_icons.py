@@ -22,6 +22,13 @@ from stormpad.icons import (
     symbol_icon,
 )
 from stormpad.session import NoteStore
+from stormpad.views.icon_picker import (
+    CLEAR_IDENTIFIER,
+    CUSTOM_EMOJI_IDENTIFIER,
+    icon_picker_click_behavior,
+    picker_selected_identifier,
+    picker_selection_flags,
+)
 
 
 @pytest.fixture
@@ -82,6 +89,41 @@ def test_invalid_icons_normalise_to_the_default_folder(value):
     assert normalize_project_icon(value) is None
     assert project_icon_kind(value) == "default"
     assert project_icon_payload(value) == DEFAULT_PROJECT_SYMBOL
+
+
+def test_picker_selects_default_for_none_and_invalid_values():
+    assert picker_selected_identifier(None) == CLEAR_IDENTIFIER
+    assert picker_selected_identifier("symbol:not-real") == CLEAR_IDENTIFIER
+
+
+def test_picker_restores_persisted_symbol_and_suggested_emoji():
+    assert picker_selected_identifier("symbol:bolt") == "symbol:bolt"
+    assert picker_selected_identifier("emoji:🚀") == "emoji:🚀"
+
+
+def test_picker_marks_custom_persisted_emoji_choice():
+    assert picker_selected_identifier("emoji:🫠") == CUSTOM_EMOJI_IDENTIFIER
+
+
+def test_picker_immediate_state_update_selects_only_clicked_identifier():
+    identifiers = ("symbol:bolt", "emoji:🚀", CLEAR_IDENTIFIER)
+    assert picker_selection_flags(identifiers, "emoji:🚀") == (
+        False,
+        True,
+        False,
+    )
+
+
+def test_picker_single_click_dispatches_and_stays_open():
+    assert icon_picker_click_behavior(1, False) == (True, False)
+
+
+def test_picker_double_click_closes_without_second_dispatch():
+    assert icon_picker_click_behavior(2, True) == (False, True)
+
+
+def test_picker_double_click_dispatches_if_first_action_was_not_delivered():
+    assert icon_picker_click_behavior(2, False) == (True, True)
 
 
 def test_only_curated_symbols_are_accepted():

@@ -17,8 +17,11 @@ from AppKit import (
     NSDraggingItem,
     NSDragOperationMove,
     NSDragOperationNone,
+    NSEvent,
     NSFont,
+    NSFontAttributeName,
     NSImage,
+    NSImageAlignCenter,
     NSImageOnly,
     NSImageScaleProportionallyUpOrDown,
     NSImageView,
@@ -36,7 +39,7 @@ from AppKit import (
     NSViewHeightSizable,
     NSViewWidthSizable,
 )
-from Foundation import NSMakeRect, NSPointInRect
+from Foundation import NSAttributedString, NSMakeRect, NSPointInRect, NSTimer
 
 from ..dragdrop import (
     NOTE_PASTEBOARD_TYPE,
@@ -54,10 +57,33 @@ from ..icons import (
 from ..models import ALL_NOTES, CATEGORIES, UNFILED, UNFILED_PROJECT_ID, Project
 from ..motion import Motion
 from .controls import FlippedView, flipped_view, icon_view, label, rounded_view, solid_view
-from .layout import add, pin_edges, set_height, set_width
+from .layout import MAIN_COLUMN_TOP_INSET, add, pin_edges, set_height, set_width
 from .motion import anim, can_animate, current_policy, run
-from .palette import Palette, symbol_image
+from .palette import Palette, menu_icon, symbol_image
 from .profile import build_profile_row
+
+
+def _destructive_menu_title(title: str, palette):
+    """A restrained red menu title (label only, never a full-row fill)."""
+    from AppKit import NSFont, NSFontAttributeName, NSForegroundColorAttributeName
+    from Foundation import NSAttributedString
+
+    return NSAttributedString.alloc().initWithString_attributes_(
+        title,
+        {
+            NSForegroundColorAttributeName: palette.destructive,
+            NSFontAttributeName: NSFont.systemFontOfSize_(13.0),
+        },
+    )
+
+
+# A stable square container for every Project icon. The 24pt box leaves enough
+# room for Apple Color Emoji's taller glyph bounds while remaining centred in
+# the 34pt row. Symbols and emoji deliberately use separate rendering metrics.
+_ROW_ICON_BOX = NSMakeRect(10, 5, 24, 24)
+_ROW_SYMBOL_POINT = 15.0
+_ROW_EMOJI_POINT = 16.0
+_ROW_LABEL_X = 40.0
 
 _ICONS = {
     ALL_NOTES: "square.grid.2x2",
@@ -71,6 +97,91 @@ _TRACKING_OPTS = (
     | NSTrackingActiveInKeyWindow
     | NSTrackingInVisibleRect
 )
+
+
+def project_click_action(click_count: int) -> str:
+    """Resolve AppKit click counts without letting a double-click toggle twice."""
+    return "rename" if int(click_count) >= 2 else "select"
+
+
+def project_row_hit_region(x: float, y: float) -> str:
+    """Classify a Project-row click without conflating icon and name actions."""
+    point = (float(x), float(y))
+    if NSPointInRect(point, _ROW_ICON_BOX):
+        return "icon"
+    if NSPointInRect(point, NSMakeRect(_ROW_LABEL_X, 7, 84, 20)):
+        return "name"
+    if NSPointInRect(point, NSMakeRect(150, 4, 26, 26)):
+        return "write"
+    if NSPointInRect(point, NSMakeRect(180, 4, 26, 26)):
+        return "ellipsis"
+    return "row"
+
+
+def nested_note_selection_states(
+    note_ids: list[str] | tuple[str, ...],
+    active_note_id: str | None,
+) -> dict[str, bool]:
+    """Nested note shortcuts are single-active navigation, never a range."""
+    return {note_id: note_id == active_note_id for note_id in note_ids}
+
+
+def toggled_project_expansion(
+    active_project_id: str | None,
+    expanded_project_id: str | None,
+    clicked_project_id: str,
+) -> str | None:
+    """Select-and-expand a new Project, or fold the selected Project in place."""
+    if clicked_project_id != active_project_id:
+        return clicked_project_id
+    return None if expanded_project_id == clicked_project_id else clicked_project_id
+
+
+class ProjectRowActionButton(NSButton):
+    """Restrained icon button that brightens slightly on hover."""
+
+    def initWithFrame_(self, frame):  # noqa: N802
+        self = objc.super(ProjectRowActionButton, self).initWithFrame_(frame)
+        if self is None:
+            return None
+        area = NSTrackingArea.alloc().initWithRect_options_owner_userInfo_(
+            NSMakeRect(0, 0, 0, 0), _TRACKING_OPTS, self, None
+        )
+        self.addTrackingArea_(area)
+        self.setAlphaValue_(0.78)
+        return self
+
+    def mouseEntered_(self, event):  # noqa: N802
+        self.setAlphaValue_(1.0)
+
+    def mouseExited_(self, event):  # noqa: N802
+        self.setAlphaValue_(0.78)
+
+
+class ProjectEmojiView(NSImageView):
+    """Draw one full-colour Apple emoji centred without text-cell clipping."""
+
+    def initWithGlyph_(self, glyph):  # noqa: N802
+        self = objc.super(ProjectEmojiView, self).init()
+        if self is None:
+            return None
+        self._glyph = str(glyph)
+        self._emoji_font = (
+            NSFont.fontWithName_size_("Apple Color Emoji", _ROW_EMOJI_POINT)
+            or NSFont.systemFontOfSize_(_ROW_EMOJI_POINT)
+        )
+        return self
+
+    def drawRect_(self, rect):  # noqa: N802
+        text = NSAttributedString.alloc().initWithString_attributes_(
+            self._glyph,
+            {NSFontAttributeName: self._emoji_font},
+        )
+        size = text.size()
+        bounds = self.bounds()
+        x = max(0.0, (float(bounds.size.width) - float(size.width)) / 2.0)
+        y = max(0.0, (float(bounds.size.height) - float(size.height)) / 2.0)
+        text.drawAtPoint_((x, y))
 
 
 class SidebarRow(FlippedView):
@@ -89,6 +200,9 @@ class SidebarRow(FlippedView):
         self._drag_lifted = False
         self._drag_started = False
         self._mouse_down_point: tuple[float, float] | None = None
+        self._single_click_timer = None
+        self._hovered = False
+        self._action_controls: list[NSButton] = []
         self._palette: Palette | None = None
         self.on_select: Callable[[str], None] | None = None
         self.action_target = None
@@ -116,6 +230,10 @@ class SidebarRow(FlippedView):
         self._mouse_down_point = (float(point.x), float(point.y))
         self._drag_started = False
 
+    def representedObject(self):  # noqa: N802
+        """Let existing Project actions resolve this row's exact UUID."""
+        return self.key
+
     def hitTest_(self, point):  # noqa: N802
         """Make icon, label, count, and empty background one draggable surface."""
         # While inline-renaming, defer to subviews so the editable field gets
@@ -126,6 +244,9 @@ class SidebarRow(FlippedView):
         # coordinates. Comparing that directly with local bounds rejected
         # every row whose y-origin was below the first 34 points.
         local = self.convertPoint_fromView_(point, self.superview())
+        for control in self._action_controls:
+            if NSPointInRect(local, control.frame()):
+                return control
         return self if NSPointInRect(local, self.bounds()) else None
 
     def mouseDragged_(self, event):  # noqa: N802
@@ -148,21 +269,46 @@ class SidebarRow(FlippedView):
     def mouseUp_(self, event):  # noqa: N802
         if self._renaming:
             return
-        # Double-click on a project name starts inline renaming; a drag never
-        # begins from it because the editable field takes over the row.
-        if (
-            event is not None
-            and self.drag_kind == "project"
-            and int(event.clickCount()) >= 2
-            and not self._drag_started
-        ):
-            self._mouse_down_point = None
-            self.begin_inline_rename()
-            return
         if not self._drag_started and self.on_select is not None:
-            self.on_select(self.key)
+            if event is None or self.drag_kind != "project":
+                self.on_select(self.key)
+            elif project_click_action(event.clickCount()) == "rename":
+                self._cancel_single_click()
+                point = self.convertPoint_fromView_(event.locationInWindow(), None)
+                region = project_row_hit_region(float(point.x), float(point.y))
+                if region == "icon" and self.action_target is not None:
+                    self.action_target.chooseProjectIcon_(self)
+                elif region == "name":
+                    self.begin_inline_rename()
+            else:
+                # Wait through AppKit's double-click interval. This prevents
+                # the first half of a rename gesture from folding the Project.
+                self._schedule_single_click()
         self._mouse_down_point = None
         self._drag_started = False
+
+    @objc.python_method
+    def _cancel_single_click(self) -> None:
+        timer = self._single_click_timer
+        self._single_click_timer = None
+        if timer is not None:
+            timer.invalidate()
+
+    @objc.python_method
+    def _schedule_single_click(self) -> None:
+        self._cancel_single_click()
+        delay = float(NSEvent.doubleClickInterval())
+
+        def fire(_timer):
+            self._single_click_timer = None
+            if not self._renaming and self.on_select is not None:
+                self.on_select(self.key)
+
+        self._single_click_timer = (
+            NSTimer.scheduledTimerWithTimeInterval_repeats_block_(
+                delay, False, fire
+            )
+        )
 
     # -- inline rename -------------------------------------------------------
 
@@ -253,15 +399,11 @@ class SidebarRow(FlippedView):
             self._end_inline_rename(True)
 
     def mouseEntered_(self, event):  # noqa: N802
-        if (
-            not self._selected
-            and not self._drop_target
-            and not self._drag_lifted
-            and self._palette is not None
-        ):
-            self.setBackgroundColor_(self._palette.hover_background)
+        self._hovered = True
+        self._apply_surface()
 
     def mouseExited_(self, event):  # noqa: N802
+        self._hovered = False
         self._apply_surface()
 
     def rightMouseDown_(self, event):  # noqa: N802
@@ -276,26 +418,46 @@ class SidebarRow(FlippedView):
         NSMenu.popUpContextMenu_withEvent_forView_(menu, event, self)
 
     def project_context_menu(self):
+        palette = self._palette
         menu = NSMenu.alloc().initWithTitle_("Project")
-        for title, action in (
-            ("Rename Project…", "renameProject:"),
-            ("Choose Icon…", "chooseProjectIcon:"),
-            ("New Note in Project", "newNoteInProject:"),
-            ("Share Project…", "shareProject:"),
-            ("Reveal Project Folder in Finder", "revealProject:"),
-            ("Move Project Up", "moveProjectUp:"),
-            ("Move Project Down", "moveProjectDown:"),
-            ("Delete Project…", "deleteProject:"),
+        # Four groups matching the menu reference: edit · share/locate · reorder
+        # · destructive. Each row carries its accent-tinted SF Symbol; Delete is
+        # the sole restrained-destructive row.
+        for title, action, symbol in (
+            ("Rename Project…", "renameProject:", "pencil"),
+            ("Choose Icon…", "chooseProjectIcon:", "face.smiling"),
+            ("New Note in Project", "newNoteInProject:", "doc.badge.plus"),
+            ("Share Project…", "shareProject:", "square.and.arrow.up"),
+            ("Reveal Project Folder in Finder", "revealProject:", "folder"),
+            ("Move Project Up", "moveProjectUp:", "arrow.up"),
+            ("Move Project Down", "moveProjectDown:", "arrow.down"),
+            ("Delete Project…", "deleteProject:", "trash"),
         ):
+            destructive = action == "deleteProject:"
             item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
                 title, action, ""
             )
             item.setTarget_(self.action_target)
             item.setRepresentedObject_(self.key)
+            if palette is not None:
+                tint = palette.destructive if destructive else palette.accent_strong
+                image = menu_icon(symbol, tint)
+                if image is not None:
+                    item.setImage_(image)
+                if destructive:
+                    # Restrained: red label at rest (matching the Light/Deep Dark
+                    # reference), never a loud full-row fill.
+                    item.setAttributedTitle_(_destructive_menu_title(title, palette))
             menu.addItem_(item)
-            if action in ("revealProject:", "moveProjectDown:"):
+            if action in ("newNoteInProject:", "revealProject:", "moveProjectDown:"):
                 menu.addItem_(NSMenuItem.separatorItem())
         return menu
+
+    def showProjectMenu_(self, sender):  # noqa: N802
+        menu = self.project_context_menu()
+        menu.popUpMenuPositioningItem_atLocation_inView_(
+            None, (0.0, 0.0), sender
+        )
 
     def _apply_surface(self) -> None:
         if self._palette is None:
@@ -321,7 +483,11 @@ class SidebarRow(FlippedView):
         self.setBackgroundColor_(
             palette.selected_background
             if emphasized
-            else NSColor.clearColor()
+            else (
+                palette.hover_background
+                if self._hovered
+                else NSColor.clearColor()
+            )
         )
         layer = self.layer()
         layer.setBorderWidth_(1.5 if self._drop_target else (1.0 if emphasized else 0.0))
@@ -351,12 +517,39 @@ class SidebarRow(FlippedView):
         self._selected = bool(selected)
         self._palette = palette
         self._apply_surface()
+        self._apply_selection_text(selected, palette)
+
+    def set_child_selected(self, selected: bool, palette: Palette) -> None:
+        """Reset and synchronously repaint a nested navigation shortcut."""
+        self._selected = bool(selected)
+        self._palette = palette
+        self._drop_target = False
+        self._drag_lifted = False
+        self._hovered = self._pointer_is_inside()
+        self._emphasized = self._selected
+        self._surface_applied = True
+        self._paint_surface(self._selected)
+        self._apply_selection_text(selected, palette)
+
+    @objc.python_method
+    def _pointer_is_inside(self) -> bool:
+        window = self.window()
+        if window is None:
+            return False
+        point = self.convertPoint_fromView_(
+            window.mouseLocationOutsideOfEventStream(), None
+        )
+        return bool(NSPointInRect(point, self.bounds()))
+
+    @objc.python_method
+    def _apply_selection_text(self, selected: bool, palette: Palette) -> None:
         self._name.setTextColor_(
             palette.text_primary if selected else palette.text_secondary
         )
-        self._count.setTextColor_(
-            palette.text_secondary if selected else palette.text_muted
-        )
+        if self._count is not None:
+            self._count.setTextColor_(
+                palette.text_secondary if selected else palette.text_muted
+            )
         # An emoji icon is a text label, not a tintable template image — it keeps
         # its own colours.
         if self._icon_is_symbol:
@@ -416,6 +609,7 @@ class Sidebar:
         *,
         on_category: Callable[[str], None],
         on_project: Callable[[str | None], None],
+        on_note: Callable[[str], None],
         search_delegate,
         project_action_target,
         on_reorder_project,
@@ -427,14 +621,19 @@ class Sidebar:
         self.view = solid_view(palette.sidebar_background)
         self._on_category = on_category
         self._on_project = on_project
+        self._on_note = on_note
         self._project_action_target = project_action_target
         self._on_reorder_project = on_reorder_project
         self._on_move_note = on_move_note
         self._projects: list[Project] = []
+        self._notes: list = []
         self._counts: dict[str, int] = {}
         self._rows: dict[str, SidebarRow] = {}
+        self._note_rows: dict[str, SidebarRow] = {}
         self._active_category = ALL_NOTES
         self._active_project_id: str | None = None
+        self._expanded_project_id: str | None = None
+        self._active_note_id: str | None = None
         self._projects_collapsed = False
         self._pending_drop = None
         self._last_announcement = ""
@@ -444,17 +643,20 @@ class Sidebar:
     def _build(self, logo_image, search_delegate) -> NSSearchField:
         p = self.palette
         header = add(self.view, flipped_view())
-        pin_edges(header, self.view, top=52, leading=16, trailing=14, bottom=None)
+        pin_edges(
+            header,
+            self.view,
+            top=MAIN_COLUMN_TOP_INSET,
+            leading=16,
+            trailing=14,
+            bottom=None,
+        )
         set_height(header, 40)
 
         logo = add(header, NSImageView.alloc().init())
         if logo_image is not None:
             logo.setImage_(logo_image)
         logo.setImageScaling_(NSImageScaleProportionallyUpOrDown)
-        logo.setWantsLayer_(True)
-        if logo.layer() is not None:
-            logo.layer().setCornerRadius_(9.0)
-            logo.layer().setMasksToBounds_(True)
         pin_edges(logo, header, top=2, leading=0, trailing=None, bottom=None)
         set_width(logo, 34)
         set_height(logo, 34)
@@ -480,7 +682,14 @@ class Sidebar:
         search.setFont_(NSFont.systemFontOfSize_(13))
         search.setSendsSearchStringImmediately_(True)
         search.setSendsWholeSearchString_(False)
-        pin_edges(search, self.view, top=104, leading=14, trailing=14, bottom=None)
+        pin_edges(
+            search,
+            self.view,
+            top=MAIN_COLUMN_TOP_INSET + 52,
+            leading=14,
+            trailing=14,
+            bottom=None,
+        )
         set_height(search, 30)
 
         nav_scroll = add(self.view, NSScrollView.alloc().init())
@@ -488,7 +697,14 @@ class Sidebar:
         nav_scroll.setBorderType_(NSNoBorder)
         nav_scroll.setHasVerticalScroller_(True)
         nav_scroll.setAutohidesScrollers_(True)
-        pin_edges(nav_scroll, self.view, top=144, leading=8, trailing=8, bottom=140)
+        pin_edges(
+            nav_scroll,
+            self.view,
+            top=MAIN_COLUMN_TOP_INSET + 92,
+            leading=8,
+            trailing=8,
+            bottom=140,
+        )
         self._nav_scroll = nav_scroll
         self._rebuild_navigation()
 
@@ -551,18 +767,22 @@ class Sidebar:
         stale stored icon can never leave a Project row blank.
         """
         if project_icon_kind(icon) == "emoji":
-            glyph = label(
-                project_icon_payload(icon),
-                NSFont.systemFontOfSize_(14),
-                self.palette.text_primary,
+            return (
+                ProjectEmojiView.alloc().initWithGlyph_(project_icon_payload(icon)),
+                False,
             )
-            glyph.setAlignment_(1)  # centred
-            return glyph, False
         name = project_icon_payload(icon) if icon else symbol
-        image = symbol_image(name, size=13) or symbol_image(
-            DEFAULT_PROJECT_SYMBOL, size=13
+        image = symbol_image(name, size=_ROW_SYMBOL_POINT) or symbol_image(
+            DEFAULT_PROJECT_SYMBOL, size=_ROW_SYMBOL_POINT
         )
-        return icon_view(image, self.palette.text_muted), True
+        view = icon_view(image, self.palette.text_muted)
+        # Fit the symbol inside the fixed box preserving its aspect ratio (SF
+        # Symbols are vector-backed, so proportional scaling stays crisp) and
+        # centre it, so a folder that is naturally wider than tall is fully
+        # visible instead of being clipped by a too-tight frame.
+        view.setImageScaling_(NSImageScaleProportionallyUpOrDown)
+        view.setImageAlignment_(NSImageAlignCenter)
+        return view, True
 
     def _make_row(
         self,
@@ -581,6 +801,9 @@ class Sidebar:
         row.on_select = on_select
         row.action_target = self._project_action_target
         row.rename_target = self._project_action_target
+        # Available immediately so a right-click context menu can tint its icons
+        # even before the row's first set_selected pass.
+        row._palette = self.palette
         row.drag_owner = self
         row.drag_kind = drag_kind
         row.drag_source_index = source_index
@@ -590,11 +813,9 @@ class Sidebar:
         parent.addSubview_(row)
 
         icon_view_, is_symbol = self._row_icon(symbol, icon)
-        # An emoji needs a slightly taller box than a template symbol so its
-        # descender is never clipped; both stay optically on the same baseline.
-        icon_view_.setFrame_(
-            NSMakeRect(12, 9, 17, 16) if is_symbol else NSMakeRect(11, 7, 19, 21)
-        )
+        # One fixed, vertically-centred container for symbol and emoji alike, so
+        # the glyph geometry never shifts between icon types or row states.
+        icon_view_.setFrame_(_ROW_ICON_BOX)
         row.addSubview_(icon_view_)
         row._icon_is_symbol = is_symbol
         name = label(
@@ -602,7 +823,8 @@ class Sidebar:
             NSFont.systemFontOfSize_(13.5),
             self.palette.text_secondary,
         )
-        name.setFrame_(NSMakeRect(38, 7, 132, 20))
+        name_width = 84 if drag_kind == "project" else 128
+        name.setFrame_(NSMakeRect(_ROW_LABEL_X, 7, name_width, 20))
         row.addSubview_(name)
         count = label(
             str(self._counts.get(key, 0)),
@@ -610,12 +832,45 @@ class Sidebar:
             self.palette.text_muted,
         )
         count.setAlignment_(2)
-        count.setFrame_(NSMakeRect(174, 7, 30, 20))
+        count.setFrame_(
+            NSMakeRect(124, 7, 22, 20)
+            if drag_kind == "project"
+            else NSMakeRect(174, 7, 30, 20)
+        )
         row.addSubview_(count)
         row._icon = icon_view_
         row._name = name
         row._count = count
         if drag_kind == "project":
+            write = ProjectRowActionButton.alloc().initWithFrame_(
+                NSMakeRect(150, 4, 26, 26)
+            )
+            write.setBordered_(False)
+            write.setImagePosition_(NSImageOnly)
+            write.setImage_(
+                symbol_image("square.and.pencil", size=11.5, weight="medium")
+            )
+            write.setContentTintColor_(self.palette.text_muted)
+            write.setTarget_(self._project_action_target)
+            write.setAction_("newNoteInProject:")
+            write.setRepresentedObject_(key)
+            write.setToolTip_("New Note in Project")
+            write.setAccessibilityLabel_("New Note in Project")
+            row.addSubview_(write)
+
+            more = ProjectRowActionButton.alloc().initWithFrame_(
+                NSMakeRect(180, 4, 26, 26)
+            )
+            more.setBordered_(False)
+            more.setImagePosition_(NSImageOnly)
+            more.setImage_(symbol_image("ellipsis", size=12, weight="semibold"))
+            more.setContentTintColor_(self.palette.text_muted)
+            more.setTarget_(row)
+            more.setAction_("showProjectMenu:")
+            more.setToolTip_("Project menu")
+            more.setAccessibilityLabel_("Project menu")
+            row.addSubview_(more)
+            row._action_controls = [write, more]
             row.registerForDraggedTypes_(
                 [PROJECT_PASTEBOARD_TYPE, NOTE_PASTEBOARD_TYPE]
             )
@@ -632,6 +887,40 @@ class Sidebar:
         self._rows[key] = row
         return row
 
+    def _make_note_row(self, parent, note, y: float) -> SidebarRow:
+        """Build a compact child shortcut with no Project drag/menu surface."""
+        row = SidebarRow.alloc().initWithKey_(note.id)
+        row.on_select = self._on_note
+        row.action_target = None
+        row.rename_target = None
+        row.drag_owner = self
+        row.drag_kind = None
+        row._parent_project_id = note.project_id
+        row._palette = self.palette
+        row.setFrame_(NSMakeRect(16, y, 202, 30))
+        row.setWantsLayer_(True)
+        row.layer().setCornerRadius_(7.0)
+        parent.addSubview_(row)
+
+        name = label(
+            note.title or "Untitled Note",
+            NSFont.systemFontOfSize_(12.5),
+            self.palette.text_secondary,
+        )
+        name.setFrame_(NSMakeRect(30, 5, 160, 20))
+        row.addSubview_(name)
+        row._icon = None
+        row._icon_is_symbol = False
+        row._name = name
+        row._count = None
+        row.registerForDraggedTypes_(
+            [PROJECT_PASTEBOARD_TYPE, NOTE_PASTEBOARD_TYPE]
+        )
+        row.setAccessibilityLabel_(f"Open note {note.title or 'Untitled Note'}")
+        self._rows[note.id] = row
+        self._note_rows[note.id] = row
+        return row
+
     def _rebuild_navigation(self) -> None:
         p = self.palette
         nav = FlippedView.alloc().init()
@@ -642,6 +931,7 @@ class Sidebar:
         # region. That made project/library rows intermittently unclickable.
         nav.setAutoresizingMask_(NSViewWidthSizable | NSViewHeightSizable)
         self._rows = {}
+        self._note_rows = {}
         y = 4.0
 
         library = label("LIBRARY", NSFont.systemFontOfSize_(10.5), p.text_muted)
@@ -716,6 +1006,11 @@ class Sidebar:
                     icon=project.icon,
                 )
                 y += 38
+                if project.id == self._expanded_project_id:
+                    for note in self._notes:
+                        if note.project_id == project.id:
+                            self._make_note_row(nav, note, y)
+                            y += 32
 
         insertion = solid_view(p.accent_strong)
         insertion.setFrame_(NSMakeRect(8, y, 202, 2))
@@ -826,6 +1121,12 @@ class Sidebar:
         payload = self._payload(sender)
         if payload is None:
             return NSDragOperationNone
+        parent_project_id = getattr(row, "_parent_project_id", None)
+        if parent_project_id is not None:
+            parent_row = self._rows.get(parent_project_id)
+            if parent_row is None:
+                return NSDragOperationNone
+            row = parent_row
         project_ids = [project.id for project in self._projects]
         point = row.convertPoint_fromView_(sender.draggingLocation(), None)
         if payload.kind == "project":
@@ -919,39 +1220,67 @@ class Sidebar:
         row.set_drop_target(True)
 
     def _apply_selection(self) -> None:
+        child_states = nested_note_selection_states(
+            tuple(self._note_rows),
+            self._active_note_id,
+        )
         for key, row in self._rows.items():
-            selected = (
-                key == self._active_project_id
-                if self._active_project_id is not None
-                else (
-                    key == self._active_category
-                    if self._active_category in CATEGORIES
-                    else key == ALL_NOTES
+            if key in self._note_rows:
+                row.set_child_selected(child_states[key], self.palette)
+                continue
+            else:
+                selected = (
+                    key == self._active_project_id
+                    if self._active_project_id is not None
+                    else (
+                        key == self._active_category
+                        if self._active_category in CATEGORIES
+                        else key == ALL_NOTES
+                    )
                 )
-            )
             row.set_selected(selected, self.palette)
 
-    def _navigation_signature(self, projects: list[Project], collapsed: bool):
+    def _navigation_signature(
+        self,
+        projects: list[Project],
+        notes: list,
+        expanded_project_id: str | None,
+        collapsed: bool,
+    ):
         """What actually requires rebuilding the navigation tree."""
         return (
             tuple((project.id, project.name, project.icon) for project in projects),
+            expanded_project_id,
+            tuple(
+                (note.id, note.title)
+                for note in notes
+                if note.project_id == expanded_project_id
+            ),
             bool(collapsed),
         )
 
     def set_navigation(
         self,
         projects: list[Project],
+        notes: list,
         counts: dict[str, int],
         *,
         category: str,
         project_id: str | None,
+        expanded_project_id: str | None,
+        note_id: str | None,
         collapsed: bool,
     ) -> None:
-        signature = self._navigation_signature(projects, collapsed)
+        signature = self._navigation_signature(
+            projects, notes, expanded_project_id, collapsed
+        )
         self._projects = list(projects)
+        self._notes = list(notes)
         self._counts = dict(counts)
         self._active_category = category
         self._active_project_id = project_id
+        self._expanded_project_id = expanded_project_id
+        self._active_note_id = note_id
         self._projects_collapsed = bool(collapsed)
         # Selecting a different row used to tear down and rebuild every row,
         # which is what made selection change abruptly. When only the selection
@@ -971,7 +1300,17 @@ class Sidebar:
     def set_counts(self, counts: dict[str, int]) -> None:
         self._counts = dict(counts)
         for key, row in self._rows.items():
-            row._count.setStringValue_(str(counts.get(key, 0)))
+            if row._count is not None:
+                row._count.setStringValue_(str(counts.get(key, 0)))
+
+    def set_active_note_id(self, note_id: str | None) -> None:
+        self._active_note_id = note_id
+        self._apply_selection()
+
+    def update_note_title(self, note_id: str, title: str) -> None:
+        row = self._note_rows.get(note_id)
+        if row is not None:
+            row._name.setStringValue_(title or "Untitled Note")
 
     def search_string(self) -> str:
         return str(self.search_field.stringValue())

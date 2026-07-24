@@ -19,7 +19,7 @@ from AppKit import (
     NSMenu,
     NSMenuItem,
 )
-from Foundation import NSMakePoint, NSMakeRect
+from Foundation import NSMakePoint, NSMakeRect, NSPointInRect
 
 from ..motion import Motion
 from ..uihelpers import (
@@ -32,7 +32,7 @@ from ..uihelpers import (
 from .controls import FlippedView, label
 from .layout import add, pin_edges, set_height, set_width
 from .motion import anim, can_animate, current_policy, run
-from .palette import symbol_image
+from .palette import menu_icon, symbol_image
 
 
 def macos_display_name() -> str:
@@ -45,12 +45,14 @@ def macos_display_name() -> str:
         return profile_display_name(None)
 
 
-def build_profile_menu(spec: tuple[MenuEntry, ...], target) -> NSMenu:
+def build_profile_menu(spec: tuple[MenuEntry, ...], target, palette=None) -> NSMenu:
     """Realise a declarative menu spec as a native ``NSMenu``.
 
     Items with an explicit target are routed to the controller; ``About`` and
     ``Quit`` intentionally keep a nil target so they travel the standard
-    responder chain like every other macOS app.
+    responder chain like every other macOS app. When a ``palette`` is supplied,
+    each row gets its accent-tinted SF Symbol (Quit stays neutral, never red)
+    and its ⌘ shortcut hint, matching the menu reference within native AppKit.
     """
     menu = NSMenu.alloc().initWithTitle_("StormPad")
     responder_chain_actions = {"orderFrontStandardAboutPanel:", "terminate:"}
@@ -59,14 +61,21 @@ def build_profile_menu(spec: tuple[MenuEntry, ...], target) -> NSMenu:
             menu.addItem_(NSMenuItem.separatorItem())
             continue
         item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
-            entry.title, entry.action or None, ""
+            entry.title, entry.action or None, entry.key or ""
         )
         if entry.action and entry.action not in responder_chain_actions:
             item.setTarget_(target)
         if entry.represented is not None:
             item.setRepresentedObject_(entry.represented)
+        if palette is not None and entry.icon:
+            # Quit is deliberately neutral (never red or accent); everything else
+            # carries the theme accent so icons read as one aligned column.
+            tint = palette.text_muted if entry.action == "terminate:" else palette.accent_strong
+            image = menu_icon(entry.icon, tint)
+            if image is not None:
+                item.setImage_(image)
         if entry.submenu:
-            item.setSubmenu_(build_profile_menu(entry.submenu, target))
+            item.setSubmenu_(build_profile_menu(entry.submenu, target, palette))
         menu.addItem_(item)
     return menu
 
@@ -88,11 +97,29 @@ class ProfileRow(FlippedView):
     def menu_is_open(self) -> bool:
         return self._menu_state.is_open
 
+    def hitTest_(self, point):  # noqa: N802
+        # Treat the composed avatar/labels/chevron and the empty area as one
+        # native menu target. AppKit supplies the point in the *superview's*
+        # coordinate space; comparing it directly against local bounds rejected
+        # every click (the row is not at its superview's origin), which is why
+        # the row appeared dead. Convert first, matching SidebarRow.
+        local = self.convertPoint_fromView_(point, self.superview())
+        return self if NSPointInRect(local, self.bounds()) else None
+
     def mouseDown_(self, event):  # noqa: N802
+        self._present_menu(event)
+
+    def rightMouseDown_(self, event):  # noqa: N802
+        self._present_menu(event)
+
+    @objc.python_method
+    def _present_menu(self, event) -> None:
         # A click while the menu is up is the dismissal, not a new request.
         if not self._menu_state.accepts_clicks or self.menu_target is None:
             return
-        menu = build_profile_menu(profile_menu_spec(self.themes), self.menu_target)
+        menu = build_profile_menu(
+            profile_menu_spec(self.themes), self.menu_target, self._palette
+        )
         self._menu_state.opened()
         self._apply_surface(pressed=True)
         try:

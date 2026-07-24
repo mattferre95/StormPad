@@ -44,6 +44,10 @@ from AppKit import (
     NSTimer,
     NSUserInterfaceLayoutOrientationHorizontal,
     NSViewController,
+    NSVisualEffectBlendingModeWithinWindow,
+    NSVisualEffectMaterialTitlebar,
+    NSVisualEffectStateFollowsWindowActiveState,
+    NSVisualEffectView,
     NSWindow,
     NSWindowStyleMaskClosable,
     NSWindowStyleMaskFullSizeContentView,
@@ -53,7 +57,14 @@ from AppKit import (
     NSWindowTitleHidden,
     NSWorkspace,
 )
-from Foundation import NSURL, NSMakeRect, NSObject, NSRunLoop, NSRunLoopCommonModes
+from Foundation import (
+    NSURL,
+    NSClassFromString,
+    NSMakeRect,
+    NSObject,
+    NSRunLoop,
+    NSRunLoopCommonModes,
+)
 
 from . import attachments, paths
 from .blocks import Block, BlockType, InlineRun
@@ -82,6 +93,7 @@ from .search import (
     filter_by_category,
     filter_by_pinned,
     filter_by_project,
+    notes_with_live_text,
     prune_pinned_ids,
     search_notes,
 )
@@ -95,8 +107,10 @@ from .uihelpers import (
     choose_selected_note,
     copy_text,
     default_new_category,
+    delete_confirmation,
     is_speakable,
     notes_panel_geometry,
+    select_after_bulk_delete,
     word_count,
 )
 from .views import empty_state as es
@@ -113,7 +127,7 @@ from .views.motion import anim, can_animate, current_policy, run
 from .views.note_list import NoteList
 from .views.palette import Palette, symbol_image
 from .views.settings import SettingsController
-from .views.sidebar import Sidebar
+from .views.sidebar import Sidebar, toggled_project_expansion
 
 _AUTOSAVE_DELAY = 0.4
 _DEFAULT_SIZE = (1100.0, 720.0)
@@ -121,6 +135,14 @@ _MIN_SIZE = (900.0, 620.0)
 _HEADER_HEIGHT = 52.0
 _SIDEBAR_WIDTH = 248.0
 _LIST_WIDTH = 326.0
+
+
+def native_glass_effect_class(lookup=NSClassFromString):
+    """Return the runtime glass class, or ``None`` on pre-glass macOS."""
+    try:
+        return lookup("NSGlassEffectView")
+    except (LookupError, TypeError):
+        return None
 
 
 def _wrap(view) -> NSViewController:
@@ -149,9 +171,15 @@ class MainController(NSObject):
 
         self._category = self._prefs.last_category
         self._project_id = self._prefs.selected_project_id
+        self._expanded_project_id = (
+            self._project_id
+            if self._project_id not in (None, UNFILED_PROJECT_ID)
+            else None
+        )
         self._query = os.environ.get("STORMPAD_INITIAL_QUERY", "").strip()
         self._current_id: str | None = self._prefs.last_note_id
         self._displayed: list = []
+        self._search_previews: dict[str, str] = {}
         # STORMPAD_PIN_FILTER is a dev/test hook to boot into the Pinned filter.
         self._pinned_only = bool(os.environ.get("STORMPAD_PIN_FILTER"))
         self._dev_notes_collapsed = True if os.environ.get("STORMPAD_COLLAPSE_NOTES") else None
@@ -289,7 +317,7 @@ class MainController(NSObject):
         primary: bool = False,
         icon_only: bool = False,
         tint: object | None = None,
-    ) -> NSButton:
+    ):
         p = self._palette
         button = NSButton.alloc().init()
         button.setBordered_(False)
@@ -310,7 +338,6 @@ class MainController(NSObject):
             button.setFont_(NSFont.systemFontOfSize_(12.5))
         if primary:
             button.setContentTintColor_(NSColor.whiteColor())
-            button.layer().setBackgroundColor_(p.accent.CGColor())
         else:
             button.setContentTintColor_(tint if tint is not None else p.text_secondary)
             button.layer().setBackgroundColor_(p.toolbar_button_background.CGColor())
@@ -320,7 +347,64 @@ class MainController(NSObject):
         width = 30.0 if icon_only else float(button.fittingSize().width) + 24.0
         set_width(button, width)
         set_height(button, 30)
+        if primary:
+            return self._glass_toolbar_button(button, width)
         return button
+
+    @objc.python_method
+    def _glass_toolbar_button(self, button: NSButton, width: float):
+        """Embed the existing action button in native glass with a safe fallback."""
+        p = self._palette
+        outer = flipped_view()
+        outer.setWantsLayer_(True)
+        outer.layer().setCornerRadius_(15.0)
+        outer.layer().setBorderWidth_(1.0)
+        outer.layer().setBorderColor_(
+            NSColor.whiteColor().colorWithAlphaComponent_(0.42).CGColor()
+        )
+        outer.layer().setShadowColor_(p.accent.CGColor())
+        outer.layer().setShadowOpacity_(0.22)
+        outer.layer().setShadowRadius_(5.0)
+        outer.layer().setShadowOffset_((0.0, -1.5))
+
+        glass_class = native_glass_effect_class()
+        effect = None
+        if glass_class is not None:
+            candidate = glass_class.alloc().init()
+            if candidate is not None and hasattr(candidate, "setContentView_"):
+                effect = candidate
+                if hasattr(effect, "setCornerRadius_"):
+                    effect.setCornerRadius_(15.0)
+                if hasattr(effect, "setTintColor_"):
+                    effect.setTintColor_(
+                        p.accent.colorWithAlphaComponent_(0.30)
+                    )
+                if hasattr(effect, "setEffectIsInteractive_"):
+                    effect.setEffectIsInteractive_(True)
+                button.setFrame_(NSMakeRect(0, 0, width, 30))
+                effect.setContentView_(button)
+                outer._glass_backend = "NSGlassEffectView"
+
+        if effect is None:
+            effect = NSVisualEffectView.alloc().init()
+            effect.setMaterial_(NSVisualEffectMaterialTitlebar)
+            effect.setBlendingMode_(NSVisualEffectBlendingModeWithinWindow)
+            effect.setState_(NSVisualEffectStateFollowsWindowActiveState)
+            effect.setWantsLayer_(True)
+            effect.layer().setCornerRadius_(15.0)
+            effect.layer().setMasksToBounds_(True)
+            effect.layer().setBackgroundColor_(
+                p.accent.colorWithAlphaComponent_(0.38).CGColor()
+            )
+            effect.addSubview_(button)
+            pin_edges(button, effect, top=0, leading=0, trailing=0, bottom=0)
+            outer._glass_backend = "NSVisualEffectView"
+
+        add(outer, effect)
+        pin_edges(effect, outer, top=0, leading=0, trailing=0, bottom=0)
+        set_width(outer, width)
+        set_height(outer, 30)
+        return outer
 
     # -- window / layout -----------------------------------------------------
 
@@ -407,6 +491,7 @@ class MainController(NSObject):
             self._logo,
             on_category=self._on_category,
             on_project=self._on_project,
+            on_note=self._on_sidebar_note_selected,
             search_delegate=self,
             project_action_target=self,
             on_reorder_project=self._on_reorder_project,
@@ -419,6 +504,7 @@ class MainController(NSObject):
         # Every creation path goes through newNote_, so the + button, Cmd+N,
         # File → New Note, and New Note in Project cannot drift apart.
         self._note_list.set_new_note_handler(lambda: self.newNote_(None))
+        self._note_list.set_delete_handler(self._request_delete_selection)
         self._note_list.set_menu_provider(self._note_context_menu)
         self._note_list.set_filter_handler(self._on_pin_filter_changed)
         self._note_list.set_pinned_only(self._pinned_only)
@@ -430,6 +516,7 @@ class MainController(NSObject):
         )
         self._editor.speech_target = self
         self._editor.transcript_target = self
+        self._editor.before_structural_return = self._autosave.flush
         self._editor.notes_dir = self._store.notes_dir
         self._editor.set_block_controls_enabled(self._prefs.show_block_controls)
         self._editor.set_color_recents(self._prefs.recent_colors)
@@ -619,6 +706,9 @@ class MainController(NSObject):
             None,
         )
         if note is not None:
+            # Programmatic selection: drive the table so the row highlights, then
+            # load the editor (notify routes through the normal selection path).
+            self._note_list.select_note_id(note.id, notify=False)
             self._on_note_selected(note.id)
 
     @objc.python_method
@@ -716,6 +806,7 @@ class MainController(NSObject):
         if any(project.id == self._project_id for project in projects):
             return self._project_id
         self._project_id = None
+        self._expanded_project_id = None
         self._prefs.selected_project_id = None
         return None
 
@@ -734,6 +825,18 @@ class MainController(NSObject):
     @objc.python_method
     def _apply_filter(self) -> None:
         all_notes = self._all_notes()
+        current = getattr(self._editor, "_current", None)
+        if (
+            self._current_id is not None
+            and current is not None
+            and current.id == self._current_id
+        ):
+            all_notes = notes_with_live_text(
+                all_notes,
+                self._current_id,
+                title=self._editor.title_text(),
+                body=self._editor.body_text(),
+            )
         projects = self._projects()
         self._project_id = self._validated_project_id(projects)
         counts = self._update_counts(all_notes, projects)
@@ -750,14 +853,18 @@ class MainController(NSObject):
             results = search_notes(
                 all_notes,
                 self._query,
-                category=None if self._category == ALL_NOTES else self._category,
-                project_id=self._project_id,
             )
             displayed = [r.note for r in results]
+            self._search_previews = {
+                result.note.id: result.snippet
+                for result in results
+                if result.snippet
+            }
             header = "Results"
             n = len(displayed)
             subtitle = f'{n} note{"s" if n != 1 else ""} matching "{self._query}"'
         else:
+            self._search_previews = {}
             displayed = filter_by_project(
                 filter_by_category(all_notes, self._category),
                 self._project_id,
@@ -766,8 +873,8 @@ class MainController(NSObject):
             n = len(displayed)
             subtitle = f"{n} note{'s' if n != 1 else ''}"
 
-        # The Pinned filter narrows whatever the current view already shows, so
-        # search and project filtering keep working underneath it.
+        # Pinned narrows the global result set during search, or the current
+        # category/Project scope when there is no query.
         if self._pinned_only:
             displayed = filter_by_pinned(displayed, pinned_ids)
             n = len(displayed)
@@ -785,12 +892,16 @@ class MainController(NSObject):
             header=header,
             subtitle=subtitle,
             transition=transition,
+            search_previews=self._search_previews,
         )
         self._sidebar.set_navigation(
             projects,
+            all_notes,
             counts,
             category=self._category,
             project_id=self._project_id,
+            expanded_project_id=self._expanded_project_id,
+            note_id=self._current_id,
             collapsed=self._prefs.projects_collapsed,
         )
 
@@ -798,7 +909,7 @@ class MainController(NSObject):
         if selected is not None:
             self._current_id = selected.id
             self._prefs.last_note_id = selected.id
-            self._note_list.select_note_id(selected.id, notify=False)
+            self._note_list.restore_active_note_id(selected.id)
             self._editor.load_note(selected)
             self._autosave.reset()
             self._empty.hide()
@@ -811,6 +922,7 @@ class MainController(NSObject):
                 self._empty.set_mode(es.NO_NOTES)
             else:
                 self._empty.set_mode(es.NO_SELECTION)
+        self._sidebar.set_active_note_id(self._current_id)
         self._update_actions_enabled()
 
     @objc.python_method
@@ -847,6 +959,7 @@ class MainController(NSObject):
         self._autosave.flush()
         self._category = category
         self._project_id = None
+        self._expanded_project_id = None
         self._prefs.selected_project_id = None
         if category == ALL_NOTES or category in CATEGORIES:
             self._prefs.last_category = category
@@ -855,6 +968,14 @@ class MainController(NSObject):
     @objc.python_method
     def _on_project(self, project_id: str | None) -> None:
         self._autosave.flush()
+        if project_id in (None, UNFILED_PROJECT_ID):
+            self._expanded_project_id = None
+        else:
+            self._expanded_project_id = toggled_project_expansion(
+                self._project_id,
+                self._expanded_project_id,
+                project_id,
+            )
         self._project_id = project_id
         self._category = ALL_NOTES
         self._prefs.last_category = ALL_NOTES
@@ -863,6 +984,7 @@ class MainController(NSObject):
 
     @objc.python_method
     def _on_note_selected(self, note_id: str) -> None:
+        self._sidebar.set_active_note_id(note_id)
         if note_id == self._current_id:
             return
         self._autosave.flush()
@@ -876,11 +998,32 @@ class MainController(NSObject):
                 return
         self._current_id = note_id
         self._prefs.last_note_id = note_id
-        self._note_list.select_note_id(note_id, notify=False)
+        # This is the table's own selection change (the active row within a
+        # possibly larger native range): the table selection is already correct,
+        # so re-selecting the single row here would collapse a Shift-click range.
+        # Just track the active note; the editor follows it.
+        self._note_list.set_active_note_id(note_id)
         self._editor.load_note(note)
         self._autosave.reset()
         self._empty.hide()
         self._update_actions_enabled()
+
+    @objc.python_method
+    def _on_sidebar_note_selected(self, note_id: str) -> None:
+        """Open a Project child shortcut in its unfiltered Project scope."""
+        self._autosave.flush()
+        self._speech.stop()
+        self._current_id = note_id
+        self._prefs.last_note_id = note_id
+        self._query = ""
+        self._sidebar.clear_search()
+        if self._pinned_only:
+            self._pinned_only = False
+            self._note_list.set_pinned_only(False)
+        # Project children are direct navigation, not range selection. Collapse
+        # any prior table selection even when the child is already the active note.
+        self._note_list.select_note_id(note_id, notify=False)
+        self._apply_filter()
 
     @objc.python_method
     def _on_title_edited(self, _text: str) -> None:
@@ -928,8 +1071,10 @@ class MainController(NSObject):
                 else self._navigation_header(self._projects())
             ),
             subtitle=self._note_list_subtitle(),
+            search_previews=self._search_previews,
         )
-        self._note_list.select_note_id(save_id, notify=False)
+        self._note_list.restore_active_note_id(save_id)
+        self._sidebar.update_note_title(save_id, note.title)
 
     @objc.python_method
     def _note_list_subtitle(self) -> str:
@@ -999,6 +1144,7 @@ class MainController(NSObject):
         order = self._prefs.project_order
         self._prefs.project_order = [*order, project.id]
         self._project_id = project.id
+        self._expanded_project_id = project.id
         self._category = ALL_NOTES
         self._prefs.selected_project_id = project.id
         self._prefs.last_category = ALL_NOTES
@@ -1082,7 +1228,12 @@ class MainController(NSObject):
         project_id = self._represented_string(sender)
         if project_id is None:
             return
-        self._on_project(project_id)
+        self._autosave.flush()
+        self._project_id = project_id
+        self._expanded_project_id = project_id
+        self._category = ALL_NOTES
+        self._prefs.last_category = ALL_NOTES
+        self._prefs.selected_project_id = project_id
         self.newNote_(sender)
 
     @objc.IBAction
@@ -1133,6 +1284,7 @@ class MainController(NSObject):
         if row is None:
             return
         menu = NSMenu.alloc().initWithTitle_("Project Icon")
+        menu.setDelegate_(self)
         item = NSMenuItem.alloc().init()
         item.setView_(
             build_icon_picker_view(self._palette, current=project.icon, target=self)
@@ -1148,8 +1300,6 @@ class MainController(NSObject):
     def setProjectIcon_(self, sender):  # noqa: N802
         project_id = self._icon_menu_project_id
         identifier = sender.identifier() if hasattr(sender, "identifier") else None
-        self._icon_menu = None
-        self._icon_menu_project_id = None
         if project_id is None or identifier is None:
             return
         raw = str(identifier)
@@ -1159,6 +1309,19 @@ class MainController(NSObject):
                 return
         icon = None if raw == CLEAR_IDENTIFIER else normalize_project_icon(raw)
         self._set_project_icon(project_id, icon)
+
+    @objc.IBAction
+    def closeProjectIconPicker_(self, sender):  # noqa: N802
+        menu = self._icon_menu
+        self._icon_menu = None
+        self._icon_menu_project_id = None
+        if menu is not None:
+            menu.cancelTracking()
+
+    def menuDidClose_(self, menu):  # noqa: N802
+        if menu is self._icon_menu:
+            self._icon_menu = None
+            self._icon_menu_project_id = None
 
     @objc.python_method
     def _prompt_project_emoji(self) -> str | None:
@@ -1361,6 +1524,7 @@ class MainController(NSObject):
                 else self._navigation_header(self._projects())
             ),
             subtitle=self._note_list_subtitle(),
+            search_previews=self._search_previews,
         )
         self._note_list.select_note_id(note.id, notify=False)
 
@@ -1580,6 +1744,19 @@ class MainController(NSObject):
             remove.setTarget_(self)
             remove.setRepresentedObject_(note.id)
             menu.addItem_(remove)
+        menu.addItem_(NSMenuItem.separatorItem())
+        # Deletes the whole selection when the right-clicked note is part of a
+        # multi-selection; the table's menuForEvent_ has already ensured a note
+        # outside the selection is selected on its own first.
+        selected = self._note_list.selected_note_ids()
+        count = len(selected) if note.id in selected and len(selected) > 1 else 1
+        delete = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+            f"Delete {count} Notes…" if count > 1 else "Delete Note…",
+            "deleteNote:",
+            "",
+        )
+        delete.setTarget_(self)
+        menu.addItem_(delete)
         return menu
 
     @objc.IBAction
@@ -1652,6 +1829,7 @@ class MainController(NSObject):
         self._current_id = moved.id
         self._prefs.last_note_id = moved.id
         self._project_id = project_id or UNFILED_PROJECT_ID
+        self._expanded_project_id = project_id
         self._category = ALL_NOTES
         self._query = ""
         self._sidebar.clear_search()
@@ -1811,6 +1989,7 @@ class MainController(NSObject):
                 else self._navigation_header(self._projects())
             ),
             subtitle=self._note_list_subtitle(),
+            search_previews=self._search_previews,
         )
         self._note_list.select_note_id(renamed.id, notify=False)
         self._editor.flash_status(f"Renamed to {renamed.path.name}")
@@ -1898,6 +2077,12 @@ class MainController(NSObject):
 
     @objc.IBAction
     def deleteNote_(self, sender):  # noqa: N802
+        # A right-clicked note already extends the selection when it is part of
+        # it, so the menu's Delete acts on the whole selection in that case.
+        selected = self._note_list.selected_note_ids()
+        if len(selected) > 1:
+            self._request_delete_selection()
+            return
         note = self._selected_note_or_none()
         if note is None:
             return
@@ -1913,10 +2098,82 @@ class MainController(NSObject):
         except StorageError as exc:
             self._alert("Couldn’t move to Trash", str(exc))  # keep note in the UI
             return
+        self._forget_pins([note.id])
         if self._prefs.last_note_id == note.id:
             self._prefs.last_note_id = None
         self._current_id = None
         self._apply_filter()
+
+    @objc.python_method
+    def _request_delete_selection(self) -> None:
+        """Delete every selected note through the safe Trash path, with one
+        confirmation. A single-note selection keeps the existing singular flow.
+        """
+        selected_ids = self._note_list.selected_note_ids()
+        if len(selected_ids) <= 1:
+            self.deleteNote_(None)
+            return
+        self._autosave.flush()
+        confirmation = delete_confirmation(len(selected_ids))
+        alert = NSAlert.alloc().init()
+        alert.setMessageText_(confirmation.title)
+        alert.setInformativeText_(confirmation.message)
+        alert.addButtonWithTitle_(confirmation.cancel_button)  # default = safe
+        remove = alert.addButtonWithTitle_(confirmation.confirm_button)
+        if hasattr(remove, "setHasDestructiveAction_"):
+            remove.setHasDestructiveAction_(True)
+        if alert.runModal() != NSAlertSecondButtonReturn:
+            return  # Cancel changes nothing
+        self._perform_bulk_delete(selected_ids)
+
+    @objc.python_method
+    def _perform_bulk_delete(self, selected_ids: list[str]) -> None:
+        """Delete confirmed notes through the safe path; preserve any that fail."""
+        self._speech.stop()
+        pre_delete = list(self._displayed)
+        removed: list[str] = []
+        failures: list[str] = []
+        for note_id in selected_ids:
+            try:
+                self._store.delete_note(note_id)  # macOS Trash, never permanent
+                removed.append(note_id)
+            except NoteNotFoundError:
+                # Already gone on disk — treat as removed so it leaves the UI.
+                removed.append(note_id)
+            except (StorageError, OSError) as exc:
+                failures.append(f"{note_id}: {exc}")
+
+        self._forget_pins(removed)
+        removed_set = set(removed)
+        if self._current_id in removed_set:
+            self._current_id = None
+        if self._prefs.last_note_id in removed_set:
+            self._prefs.last_note_id = None
+        # Select the nearest surviving visible note where practical.
+        survivor = select_after_bulk_delete(pre_delete, removed_set)
+        if survivor is not None:
+            self._current_id = survivor
+        self._note_list.select_note_id(survivor, notify=False)
+        self._apply_filter()  # counts, sidebar, Pinned all refresh here
+
+        if failures:
+            # Everything not successfully removed is preserved and reported.
+            self._alert(
+                "Some notes could not be removed",
+                f"{len(removed)} removed, {len(failures)} kept.\n\n"
+                + "\n".join(failures),
+            )
+
+    @objc.python_method
+    def _forget_pins(self, note_ids) -> None:
+        """Drop deleted UUIDs from pinned preferences; stale ids are harmless."""
+        gone = set(note_ids)
+        if not gone:
+            return
+        pinned = self._prefs.pinned_note_ids
+        remaining = [pid for pid in pinned if pid not in gone]
+        if remaining != pinned:
+            self._prefs.pinned_note_ids = remaining
 
     @objc.IBAction
     def speakSelection_(self, sender):  # noqa: N802
@@ -2078,6 +2335,8 @@ class MainController(NSObject):
 
     def controlTextDidChange_(self, notification):  # noqa: N802
         if notification.object() is self._sidebar.search_field:
+            # Search may immediately select a different result. Persist the
+            # active live editor first so unsaved text cannot be displaced.
             self._autosave.flush()
             self._query = str(self._sidebar.search_field.stringValue()).strip()
             self._apply_filter()

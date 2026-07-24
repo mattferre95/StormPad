@@ -147,10 +147,13 @@ class Block:
     alt: str | None = None
     raw: str | None = None
     collapsed: bool = False
+    display_width: float | None = None
 
     def __post_init__(self) -> None:
         self.runs = coalesce_runs(self.runs)
         self.indent = max(0, int(self.indent))
+        if self.display_width is not None:
+            self.display_width = min(1600.0, max(96.0, float(self.display_width)))
         if self.kind == BlockType.RAW and self.raw is None:
             self.raw = self.text
 
@@ -205,6 +208,7 @@ def convert_block(block: Block, kind: BlockType) -> Block:
         target=block.target if kind in (BlockType.LINK, BlockType.IMAGE, BlockType.FILE) else None,
         alt=block.alt if kind == BlockType.IMAGE else None,
         collapsed=block.collapsed if kind == BlockType.TRANSCRIPT else False,
+        display_width=block.display_width if kind == BlockType.IMAGE else None,
     )
 
 
@@ -260,6 +264,7 @@ def apply_block_command(
         converted.checked = block.checked
         converted.indent = block.indent
         converted.collapsed = block.collapsed
+        converted.display_width = block.display_width
         result[index] = converted
         return result, index
     return insert_block(result, index, block, above=option_pressed)
@@ -291,6 +296,45 @@ def next_block_after_return(block: Block) -> Block:
     if block.kind in (BlockType.BULLET, BlockType.NUMBERED, BlockType.TODO):
         return Block(kind=block.kind, indent=block.indent)
     return Block()
+
+
+def split_block_after_return(block: Block, offset: int) -> tuple[Block, Block]:
+    """Split an editable block at a text offset without losing inline marks."""
+    before, after = split_runs(block.runs, offset)
+    first = Block(
+        kind=block.kind,
+        runs=before,
+        checked=block.checked,
+        indent=block.indent,
+        target=block.target,
+        alt=block.alt,
+        collapsed=block.collapsed,
+        display_width=block.display_width,
+    )
+    second = next_block_after_return(block)
+    second.runs = after
+    return first, second
+
+
+def insert_block_after_selection(
+    blocks: list[Block], indices: list[int]
+) -> tuple[list[Block], int]:
+    """Preserve selected blocks and insert a continuation after the last one."""
+    result = list(blocks) or [Block()]
+    last = min(max(indices or [0]), len(result) - 1)
+    result.insert(last + 1, next_block_after_return(result[last]))
+    return result, last + 1
+
+
+def merge_empty_block_backward(
+    blocks: list[Block], index: int
+) -> tuple[list[Block], int]:
+    """Remove an empty block and return the preceding caret destination."""
+    result = list(blocks)
+    if 0 < index < len(result) and result[index].is_empty:
+        result.pop(index)
+        return result, index - 1
+    return result, min(max(index, 0), max(0, len(result) - 1))
 
 
 def empty_return_result(block: Block) -> Block:

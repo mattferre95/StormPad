@@ -18,10 +18,13 @@ from stormpad.blocks import (
     convert_selected_blocks,
     empty_return_result,
     insert_block,
+    insert_block_after_selection,
+    merge_empty_block_backward,
     move_block,
     next_block_after_return,
     remove_inline_mark,
     reorder_blocks,
+    split_block_after_return,
     split_runs,
     toggle_todo,
 )
@@ -265,6 +268,83 @@ def test_list_and_todo_keyboard_transitions():
     assert empty_return_result(Block(kind=BlockType.BULLET)).kind == BlockType.TEXT
     assert empty_return_result(Block(kind=BlockType.TODO)).kind == BlockType.TEXT
     assert backspace_empty_result(Block(kind=BlockType.QUOTE)).kind == BlockType.TEXT
+
+
+def test_return_splits_normal_block_at_caret_and_preserves_marks():
+    bold = InlineMark(MarkType.BOLD)
+    block = Block(
+        runs=[
+            InlineRun("before", (bold,)),
+            InlineRun("after", (InlineMark(MarkType.ITALIC),)),
+        ]
+    )
+    first, second = split_block_after_return(block, 4)
+    assert first.text == "befo"
+    assert second.text == "reafter"
+    assert first.runs == [InlineRun("befo", (bold,))]
+    assert second.runs[0] == InlineRun("re", (bold,))
+
+
+def test_return_with_selection_inside_one_block_preserves_selected_text():
+    original = Block.text_block("keep this selected text")
+    result, destination = insert_block_after_selection([original], [0])
+    assert destination == 1
+    assert result[0] is original
+    assert result[0].text == "keep this selected text"
+    assert result[1].is_empty
+
+
+def test_return_with_selection_spanning_blocks_preserves_every_block():
+    original = [Block.text_block("Alpha"), Block.text_block("Beta"), Block.text_block("Gamma")]
+    result, destination = insert_block_after_selection(original, [0, 1])
+    assert destination == 2
+    assert [block.text for block in result] == ["Alpha", "Beta", "", "Gamma"]
+
+
+def test_return_with_unicode_selection_preserves_graphemes():
+    original = Block.text_block("Café 🌩️ 東京")
+    result, _destination = insert_block_after_selection([original], [0])
+    assert result[0].text == "Café 🌩️ 東京"
+
+
+def test_return_with_formatted_selection_preserves_runs_exactly():
+    marks = (
+        InlineMark(MarkType.BOLD),
+        InlineMark(MarkType.HIGHLIGHT, "yellow"),
+    )
+    original = Block(runs=[InlineRun("formatted", marks)])
+    result, _destination = insert_block_after_selection([original], [0])
+    assert result[0].runs == [InlineRun("formatted", marks)]
+
+
+def test_rapid_return_then_typing_keeps_original_and_targets_new_block():
+    original = Block.text_block("already typed")
+    result, destination = insert_block_after_selection([original], [0])
+    result[destination].runs = [InlineRun("immediate typing")]
+    assert [block.text for block in result] == ["already typed", "immediate typing"]
+
+
+def test_backspace_in_new_empty_block_merges_to_previous_without_data_loss():
+    bold = InlineMark(MarkType.BOLD)
+    previous = Block(runs=[InlineRun("preserved", (bold,))])
+    result, destination = merge_empty_block_backward([previous, Block()], 1)
+    assert destination == 0
+    assert result == [previous]
+    assert result[0].runs == [InlineRun("preserved", (bold,))]
+
+
+def test_image_display_width_round_trips_in_readable_metadata():
+    block = Block(
+        kind=BlockType.IMAGE,
+        runs=[InlineRun("Storm")],
+        target="../Attachments/id/storm.png",
+        alt="Storm",
+        display_width=384.5,
+    )
+    markdown = serialize_blocks([block])
+    assert '<!-- stormpad:image width="384.5" -->' in markdown
+    assert "![Storm](../Attachments/id/storm.png)" in markdown
+    assert parse_blocks(markdown) == [block]
 
 
 def test_todo_completion():

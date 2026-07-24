@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from AppKit import NSLayoutConstraint, NSView
 
+MAIN_COLUMN_TOP_INSET = 24.0
+
 
 def add(parent: NSView, child: NSView) -> NSView:
     """Add ``child`` to ``parent`` for Auto Layout and return it."""

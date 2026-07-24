@@ -84,7 +84,11 @@ def serialize_block(block: Block) -> str:
         return f"[{text}]({_safe_target(block.target or '')})"
     if block.kind == BlockType.IMAGE:
         alt = block.alt if block.alt is not None else block.text
-        return f"![{_escape_text(alt)}]({_safe_target(block.target or '')})"
+        image = f"![{_escape_text(alt)}]({_safe_target(block.target or '')})"
+        if block.display_width is None:
+            return image
+        width = f"{block.display_width:.2f}".rstrip("0").rstrip(".")
+        return f'<!-- stormpad:image width="{width}" -->\n{image}'
     if block.kind == BlockType.FILE:
         return f"[{text}]({_safe_target(block.target or '')})"
     if block.kind == BlockType.TRANSCRIPT:

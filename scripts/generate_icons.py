@@ -1,7 +1,7 @@
-"""Generate macOS .icns icon sizes from the official logo.
+"""Generate macOS .icns icon sizes from the development app-icon artwork.
 
 Reproducible, documented derivation of app-icon assets from the untouched
-source logo (``assets/Stormpad_logo.png``). The source file is never modified.
+source artwork (``assets/Stormpad_webapp.png``). The source file is never modified.
 
 This is a Phase 6 (packaging) utility and is intentionally a documented stub in
 Phase 1 — it defines the reproducible workflow without running it yet. It uses
@@ -17,7 +17,7 @@ from __future__ import annotations
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-SOURCE_LOGO = ROOT / "assets" / "Stormpad_logo.png"
+SOURCE_ARTWORK = ROOT / "assets" / "Stormpad_webapp.png"
 ICON_DIR = ROOT / "assets" / "icon"
 
 # Standard macOS iconset sizes (1x and 2x).
@@ -28,7 +28,7 @@ def generate() -> None:
     """Produce an .iconset and .icns from the source logo using sips/iconutil."""
     raise NotImplementedError(
         "Icon generation is wired up in Phase 6 (packaging). "
-        "It will build an .iconset from assets/Stormpad_logo.png via `sips` "
+        "It will build an .iconset from assets/Stormpad_webapp.png via `sips` "
         "and package it with `iconutil`, never modifying the source file."
     )
 
