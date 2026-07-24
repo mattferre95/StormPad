@@ -111,6 +111,8 @@ class Theme:
     inline_orange: str
     inline_red: str
     inline_purple: str
+    inline_brown: str
+    inline_pink: str
 
     # -- Decorative (numeric) --
     gradient_top: str
@@ -187,6 +189,8 @@ STORM_BLUE_THEME = Theme(
     inline_orange="#FB923C",
     inline_red="#F87171",
     inline_purple="#C084FC",
+    inline_brown="#C89F7B",
+    inline_pink="#F472B6",
     gradient_top="#12224F",
     gradient_bottom="#0A1128",
     glow_color="#12224F",
@@ -261,6 +265,8 @@ LIGHT_THEME = Theme(
     inline_orange="#EA580C",
     inline_red="#DC2626",
     inline_purple="#9333EA",
+    inline_brown="#92400E",
+    inline_pink="#DB2777",
     gradient_top="#EAF1FF",
     gradient_bottom="#F7FAFF",
     glow_color="#EAF1FF",
@@ -335,6 +341,8 @@ DEEP_DARK_THEME = Theme(
     inline_orange="#FDBA74",
     inline_red="#FCA5A5",
     inline_purple="#D8B4FE",
+    inline_brown="#D6B08C",
+    inline_pink="#F9A8D4",
     gradient_top="#161618",
     gradient_bottom="#0A0A0B",
     glow_color="#000000",

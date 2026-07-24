@@ -46,6 +46,8 @@ COLOR_TOKENS: tuple[str, ...] = (
     "orange",
     "red",
     "purple",
+    "brown",
+    "pink",
 )
 
 PARAGRAPH_BLOCK_TYPES: frozenset[BlockType] = frozenset(

@@ -116,32 +116,38 @@ def test_prune_pinned_ids_edge_cases():
 # -- note-row display tag ------------------------------------------------------
 
 
-def test_project_note_shows_project_name_not_category():
+def test_project_note_shows_only_the_project_name():
     filed = note("a", category=models.IDEAS, project_id="p1")
-    assert display_tag(filed, {"p1": "Build"}) == "Build"
+    assert display_tag(filed, {"p1": "test1"}) == "test1"
 
 
-def test_unfiled_note_shows_its_category():
+def test_unfiled_note_shows_no_tag_at_all():
+    """Categories are never surfaced as note-row tags."""
     for category in (models.IDEAS, models.DRAFTS, models.SESSIONS):
-        assert display_tag(note("a", category=category), {"p1": "Build"}) == category
+        assert display_tag(note("a", category=category), {"p1": "test1"}) is None
 
 
 def test_renamed_project_updates_tag_immediately():
     filed = note("a", project_id="p1")
-    assert display_tag(filed, {"p1": "Build"}) == "Build"
-    assert display_tag(filed, {"p1": "Build v2"}) == "Build v2"
+    assert display_tag(filed, {"p1": "test1"}) == "test1"
+    assert display_tag(filed, {"p1": "test1 renamed"}) == "test1 renamed"
 
 
-def test_moving_note_between_project_and_unfiled_switches_tag():
+def test_moving_between_projects_and_unfiled_updates_tag():
     n = note("a", category=models.DRAFTS, project_id=None)
-    assert display_tag(n, {"p1": "Build"}) == models.DRAFTS
+    names = {"p1": "test1", "p2": "test2"}
+    assert display_tag(n, names) is None  # Unfiled -> no tag
     n.project_id = "p1"
-    assert display_tag(n, {"p1": "Build"}) == "Build"
-    n.project_id = None
-    assert display_tag(n, {"p1": "Build"}) == models.DRAFTS
+    assert display_tag(n, names) == "test1"
+    n.project_id = "p2"  # moved to another project
+    assert display_tag(n, names) == "test2"
+    n.project_id = None  # back to Unfiled
+    assert display_tag(n, names) is None
 
 
-def test_unknown_project_falls_back_to_category():
+def test_unknown_project_shows_no_tag_and_keeps_category_intact():
     filed = note("a", category=models.SESSIONS, project_id="gone")
-    assert display_tag(filed, {"p1": "Build"}) == models.SESSIONS
-    assert display_tag(filed, None) == models.SESSIONS
+    assert display_tag(filed, {"p1": "test1"}) is None
+    assert display_tag(filed, None) is None
+    # Category metadata is untouched by presentation.
+    assert filed.category == models.SESSIONS

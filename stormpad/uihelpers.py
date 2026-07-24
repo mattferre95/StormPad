@@ -15,7 +15,7 @@ from enum import StrEnum
 from .block_parser import parse_blocks
 from .blocks import BlockType
 from .exporter import note_to_plain_text
-from .models import ALL_NOTES, CATEGORIES, DEFAULT_CATEGORY, Note
+from .models import CATEGORIES, DEFAULT_CATEGORY, Note
 
 
 class SaveStatus(StrEnum):
@@ -27,19 +27,14 @@ class SaveStatus(StrEnum):
 
 
 def display_tag(note: Note, project_names: dict[str, str] | None = None) -> str | None:
-    """The tag shown on a note row: Project name if filed, else its Category.
+    """The tag shown on a note row: the Project name, or nothing.
 
-    Presentation only — the note's underlying Category is never modified. A note
-    whose project has been deleted (or whose name is unknown) falls back to its
-    Category so the row is never left untagged.
+    Notes inside a Project show that Project's name. Unfiled notes show no tag —
+    Categories are never surfaced as note-row tags (they remain in the model and
+    the sidebar). Presentation only: the note's Category is never modified.
     """
     if note.project_id:
-        name = (project_names or {}).get(note.project_id)
-        if name:
-            return name
-    category = note.category
-    if category and category != ALL_NOTES:
-        return category
+        return (project_names or {}).get(note.project_id) or None
     return None
 
 
@@ -136,12 +131,18 @@ class GutterRect:
 @dataclass(frozen=True)
 class BlockGutterLayout:
     add: GutterRect
+    edit: GutterRect
     text_origin_x: float
     clearance: float
 
     @property
     def does_not_overlap_text(self) -> bool:
-        return self.add.max_x + self.clearance <= self.text_origin_x
+        rightmost = max(self.add.max_x, self.edit.max_x)
+        return rightmost + self.clearance <= self.text_origin_x
+
+    @property
+    def controls_do_not_overlap(self) -> bool:
+        return self.add.max_x <= self.edit.x or self.edit.max_x <= self.add.x
 
 
 def block_gutter_layout(
@@ -150,11 +151,19 @@ def block_gutter_layout(
     *,
     control_size: float = 28.0,
     text_clearance: float = 8.0,
+    control_gap: float = 2.0,
 ) -> BlockGutterLayout:
-    """Place the sole add control wholly to the left of the text column."""
-    add_x = text_origin_x - text_clearance - control_size
+    """Place the add (+) and block-edit controls left of the text column.
+
+    Both sit wholly outside the text column so they can never overlap text;
+    ``edit`` is the inner control (nearest the text) and ``add`` sits to its
+    left, matching the reading order of "insert here" then "edit this block".
+    """
+    edit_x = text_origin_x - text_clearance - control_size
+    add_x = edit_x - control_gap - control_size
     return BlockGutterLayout(
         add=GutterRect(add_x, y, control_size, control_size),
+        edit=GutterRect(edit_x, y, control_size, control_size),
         text_origin_x=text_origin_x,
         clearance=text_clearance,
     )

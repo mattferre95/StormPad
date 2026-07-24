@@ -28,6 +28,7 @@ from AppKit import (
     NSPasteboardItem,
     NSScrollView,
     NSSearchField,
+    NSTextField,
     NSTrackingActiveInKeyWindow,
     NSTrackingArea,
     NSTrackingInVisibleRect,
@@ -80,6 +81,10 @@ class SidebarRow(FlippedView):
         self._palette: Palette | None = None
         self.on_select: Callable[[str], None] | None = None
         self.action_target = None
+        self.rename_target = None
+        self._renaming = False
+        self._rename_field = None
+        self._original_name = ""
         self.drag_owner = None
         self.drag_kind: str | None = None
         self.drag_source_index = 0
@@ -94,12 +99,18 @@ class SidebarRow(FlippedView):
             if self.on_select is not None:
                 self.on_select(self.key)
             return
+        if self._renaming:
+            return
         point = self.convertPoint_fromView_(event.locationInWindow(), None)
         self._mouse_down_point = (float(point.x), float(point.y))
         self._drag_started = False
 
     def hitTest_(self, point):  # noqa: N802
         """Make icon, label, count, and empty background one draggable surface."""
+        # While inline-renaming, defer to subviews so the editable field gets
+        # the clicks instead of the row swallowing them.
+        if self._renaming:
+            return objc.super(SidebarRow, self).hitTest_(point)
         # AppKit supplies hitTest: points in the receiver's superview
         # coordinates. Comparing that directly with local bounds rejected
         # every row whose y-origin was below the first 34 points.
@@ -108,7 +119,8 @@ class SidebarRow(FlippedView):
 
     def mouseDragged_(self, event):  # noqa: N802
         if (
-            self.drag_kind != "project"
+            self._renaming
+            or self.drag_kind != "project"
             or self.drag_owner is None
             or self._mouse_down_point is None
             or self._drag_started
@@ -123,10 +135,90 @@ class SidebarRow(FlippedView):
         self._drag_started = bool(self.drag_owner.start_project_drag(self, event))
 
     def mouseUp_(self, event):  # noqa: N802
+        if self._renaming:
+            return
+        # Double-click on a project name starts inline renaming; a drag never
+        # begins from it because the editable field takes over the row.
+        if (
+            event is not None
+            and self.drag_kind == "project"
+            and int(event.clickCount()) >= 2
+            and not self._drag_started
+        ):
+            self._mouse_down_point = None
+            self.begin_inline_rename()
+            return
         if not self._drag_started and self.on_select is not None:
             self.on_select(self.key)
         self._mouse_down_point = None
         self._drag_started = False
+
+    # -- inline rename -------------------------------------------------------
+
+    @objc.python_method
+    def begin_inline_rename(self):
+        """Swap the name label for an editable field, in place."""
+        if self._renaming or self.drag_kind != "project":
+            return
+        self._renaming = True
+        self._original_name = str(self._name.stringValue())
+        frame = self._name.frame()
+        field = NSTextField.alloc().initWithFrame_(frame)
+        field.setStringValue_(self._original_name)
+        field.setFont_(self._name.font())
+        field.setBezeled_(True)
+        field.setBezelStyle_(0)  # square bezel
+        field.setEditable_(True)
+        field.setSelectable_(True)
+        field.setDrawsBackground_(True)
+        field.setDelegate_(self)
+        field.setAccessibilityLabel_("Project name")
+        self._name.setHidden_(True)
+        self.addSubview_(field)
+        self._rename_field = field
+        window = self.window()
+        if window is not None:
+            window.makeFirstResponder_(field)
+            field.currentEditor() and field.currentEditor().selectAll_(None)
+
+    @objc.python_method
+    def _end_inline_rename(self, commit: bool):
+        field = self._rename_field
+        if field is None:
+            return
+        value = str(field.stringValue()) if commit else ""
+        self._rename_field = None
+        self._renaming = False
+        field.setDelegate_(None)
+        field.removeFromSuperview()
+        self._name.setHidden_(False)
+        window = self.window()
+        if window is not None:
+            window.makeFirstResponder_(None)
+        if not commit:
+            return
+        cleaned = value.strip()
+        # An empty name is never accepted; the store handles sanitising unsafe
+        # filesystem characters and de-duplicating names.
+        if not cleaned or cleaned == self._original_name:
+            return
+        if self.rename_target is not None:
+            self.rename_target.rename_project_inline(self.key, cleaned)
+
+    def control_textView_doCommandBySelector_(self, control, view, selector):  # noqa: N802
+        name = str(selector)
+        if name == "insertNewline:":
+            self._end_inline_rename(True)
+            return True
+        if name == "cancelOperation:":
+            self._end_inline_rename(False)
+            return True
+        return False
+
+    def controlTextDidEndEditing_(self, notification):  # noqa: N802
+        # Clicking away commits, matching normal macOS field behaviour.
+        if self._renaming:
+            self._end_inline_rename(True)
 
     def mouseEntered_(self, event):  # noqa: N802
         if (
@@ -396,6 +488,7 @@ class Sidebar:
         row = SidebarRow.alloc().initWithKey_(key)
         row.on_select = on_select
         row.action_target = self._project_action_target
+        row.rename_target = self._project_action_target
         row.drag_owner = self
         row.drag_kind = drag_kind
         row.drag_source_index = source_index

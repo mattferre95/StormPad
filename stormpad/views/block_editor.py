@@ -8,6 +8,7 @@ semantics. Markdown conversion remains in the AppKit-free parser/serializer.
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import replace
 from pathlib import Path
 
 import objc
@@ -88,6 +89,7 @@ from ..uihelpers import (
     title_command_focus,
     title_display_text,
 )
+from .color_palette import build_color_palette_view
 from .controls import FlippedView, label, rounded_view
 from .layout import add, pin_edges, set_height, set_width
 from .palette import Palette, serif_font, symbol_image
@@ -179,6 +181,17 @@ _BLOCK_MENU: tuple[tuple[str, BlockType, str], ...] = (
     ("Image", BlockType.IMAGE, "photo"),
     ("File", BlockType.FILE, "doc"),
     ("Transcript", BlockType.TRANSCRIPT, "waveform"),
+)
+# Block-edit menu: paragraph types this block can be turned into, in place.
+_BLOCK_EDIT_MENU: tuple[tuple[str, BlockType, str], ...] = (
+    ("Text", BlockType.TEXT, "text.alignleft"),
+    ("Heading 1", BlockType.HEADING_1, "textformat.size.larger"),
+    ("Heading 2", BlockType.HEADING_2, "textformat.size"),
+    ("Heading 3", BlockType.HEADING_3, "textformat"),
+    ("To-do", BlockType.TODO, "checkmark.square"),
+    ("Bulleted List", BlockType.BULLET, "list.bullet"),
+    ("Numbered List", BlockType.NUMBERED, "list.number"),
+    ("Quote", BlockType.QUOTE, "quote.opening"),
 )
 
 
@@ -384,6 +397,8 @@ class Editor(NSObject):
         self._block_controls_enabled = True
         self._block_menu = None
         self._color_menu = None
+        self._color_recents: list[str] = []
+        self.on_color_used = None
         self._full_note_selected = False
         self._setting_full_note_selection = False
         self.notes_dir: Path | None = None
@@ -461,6 +476,9 @@ class Editor(NSObject):
         self._gutter_hover = gutter
 
         self._plus = self._overlay_button("+", "showBlockMenu:", "Add Block", symbol="plus")
+        self._block_edit = self._overlay_button(
+            "", "showBlockEditMenu:", "Edit Block", symbol="ellipsis"
+        )
         initial = block_gutter_layout(_BODY_INSET, 16.0)
         self._plus.setFrame_(
             NSMakeRect(
@@ -468,6 +486,14 @@ class Editor(NSObject):
                 initial.add.y,
                 initial.add.width,
                 initial.add.height,
+            )
+        )
+        self._block_edit.setFrame_(
+            NSMakeRect(
+                initial.edit.x,
+                initial.edit.y,
+                initial.edit.width,
+                initial.edit.height,
             )
         )
         self._set_gutter_hidden(True)
@@ -1174,6 +1200,7 @@ class Editor(NSObject):
     def _set_gutter_hidden(self, hidden: bool) -> None:
         should_hide = hidden or not self._block_controls_enabled
         self._plus.setHidden_(should_hide)
+        self._block_edit.setHidden_(should_hide)
 
     @objc.python_method
     def set_block_controls_enabled(self, enabled: bool) -> None:
@@ -1266,6 +1293,7 @@ class Editor(NSObject):
                 _BODY_INSET, y - float(self._gutter_hover.frame().origin.y)
             )
             self._plus.setFrameOrigin_((geometry.add.x, geometry.add.y))
+            self._block_edit.setFrameOrigin_((geometry.edit.x, geometry.edit.y))
         except (AttributeError, TypeError, ValueError):
             self._set_gutter_hidden(True)
 
@@ -1321,6 +1349,102 @@ class Editor(NSObject):
             menu.addItem_(item)
         self._block_menu = menu
         menu.popUpMenuPositioningItem_atLocation_inView_(None, (0.0, 0.0), sender)
+
+    @objc.IBAction
+    def showBlockEditMenu_(self, sender):  # noqa: N802
+        """Menu that edits the exact block the gutter is currently beside."""
+        # Resolve the target from the hovered block before the menu takes focus,
+        # so it never acts on a previously selected block.
+        self.prepare_block_command(hovered_index=self._hovered_block_index)
+        target = self._command_block_index
+        menu = NSMenu.alloc().initWithTitle_("Edit Block")
+        for title, kind, symbol in _BLOCK_EDIT_MENU:
+            item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+                title, "convertBlockType:", ""
+            )
+            item.setTarget_(self)
+            item.setRepresentedObject_(f"{kind.value}|{target}")
+            image = symbol_image(symbol, size=12)
+            if image is not None:
+                item.setImage_(image)
+            menu.addItem_(item)
+        menu.addItem_(NSMenuItem.separatorItem())
+        for title, action, symbol in (
+            ("Duplicate Block", "duplicateBlock:", "plus.square.on.square"),
+            ("Delete Block", "deleteBlock:", "trash"),
+        ):
+            item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(title, action, "")
+            item.setTarget_(self)
+            item.setRepresentedObject_(str(target))
+            image = symbol_image(symbol, size=12)
+            if image is not None:
+                item.setImage_(image)
+            menu.addItem_(item)
+        self._block_menu = menu
+        menu.popUpMenuPositioningItem_atLocation_inView_(None, (0.0, 0.0), sender)
+
+    @objc.IBAction
+    def convertBlockType_(self, sender):  # noqa: N802
+        payload = str(sender.representedObject())
+        raw_kind, _, raw_index = payload.partition("|")
+        try:
+            kind = BlockType(raw_kind)
+            index = int(raw_index)
+        except (ValueError, TypeError):
+            self._clear_command_context()
+            return
+        self._convert_block_at_index(kind, index)
+
+    @objc.python_method
+    def _convert_block_at_index(self, kind: BlockType, index: int) -> None:
+        """Convert exactly one block in place, preserving its text and marks."""
+        blocks = self._extract_blocks()
+        if not blocks:
+            self._clear_command_context()
+            return
+        index = min(max(int(index), 0), len(blocks) - 1)
+        converted = convert_selected_blocks(blocks, [index], kind)
+        if converted == blocks:
+            self._clear_command_context()
+            return
+        self._replace_document(converted, register_undo=True, focus_index=index)
+        self.focus_body()
+        self.flash_status(f"Converted to {self._block_title(kind)}")
+        self._clear_command_context()
+
+    @objc.IBAction
+    def duplicateBlock_(self, sender):  # noqa: N802
+        blocks = self._extract_blocks()
+        if not blocks:
+            return
+        try:
+            index = int(str(sender.representedObject()))
+        except (ValueError, TypeError):
+            return
+        index = min(max(index, 0), len(blocks) - 1)
+        duplicated = [*blocks[: index + 1], replace(blocks[index]), *blocks[index + 1 :]]
+        self._replace_document(duplicated, register_undo=True, focus_index=index + 1)
+        self.focus_body()
+        self.flash_status("Duplicated block")
+        self._clear_command_context()
+
+    @objc.IBAction
+    def deleteBlock_(self, sender):  # noqa: N802
+        blocks = self._extract_blocks()
+        if len(blocks) <= 1:
+            return  # never leave the document with no block
+        try:
+            index = int(str(sender.representedObject()))
+        except (ValueError, TypeError):
+            return
+        index = min(max(index, 0), len(blocks) - 1)
+        remaining = [*blocks[:index], *blocks[index + 1 :]]
+        self._replace_document(
+            remaining, register_undo=True, focus_index=max(0, index - 1)
+        )
+        self.focus_body()
+        self.flash_status("Deleted block")
+        self._clear_command_context()
 
     @objc.IBAction
     def chooseBlockType_(self, sender):  # noqa: N802
@@ -1563,25 +1687,29 @@ class Editor(NSObject):
         self._show_color_menu(sender, "highlight")
 
     def _show_color_menu(self, sender, mode: str) -> None:
+        """Show the compact palette panel (Recently used / Text / Background).
+
+        ``mode`` only decides which section the caller cares about; the panel
+        always exposes both so one floating surface covers text and background.
+        """
         menu = NSMenu.alloc().initWithTitle_("Color")
-        selected_token = self.selected_color_token(mode)
-        for token in COLOR_TOKENS:
-            title = self.color_menu_title(token, mode)
-            swatch = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
-                title, "chooseColor:", ""
+        item = NSMenuItem.alloc().init()
+        item.setView_(
+            build_color_palette_view(
+                self._palette,
+                recents=self._color_recents,
+                selected_text=self.selected_color_token("text"),
+                selected_highlight=self.selected_color_token("highlight"),
+                target=self,
             )
-            swatch.setTarget_(self)
-            swatch.setRepresentedObject_(f"{mode}:{token}")
-            swatch.setImage_(
-                self._color_swatch_image(token, mode, selected=token == selected_token)
-            )
-            swatch.setToolTip_(f"{mode.title()} color: {title}")
-            swatch.setAccessibilityLabel_(f"{mode.title()} color: {title}")
-            if token == selected_token:
-                swatch.setState_(1)
-            menu.addItem_(swatch)
+        )
+        menu.addItem_(item)
         self._color_menu = menu
         menu.popUpMenuPositioningItem_atLocation_inView_(None, (0.0, 0.0), sender)
+
+    @objc.python_method
+    def set_color_recents(self, recents) -> None:
+        self._color_recents = [entry for entry in (recents or []) if ":" in entry]
 
     @objc.python_method
     def color_menu_title(self, token: str, mode: str) -> str:
@@ -1675,6 +1803,8 @@ class Editor(NSObject):
                 selected,
             )
         self._emit_body_change()
+        if self.on_color_used is not None:
+            self.on_color_used(f"{mode}:{token}")
         if self._color_menu is not None:
             self._color_menu.cancelTracking()
 

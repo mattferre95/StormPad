@@ -328,3 +328,61 @@ def test_html_is_escaped_safely_in_normal_text():
     serialized = serialize_inline([InlineRun("hello <script>alert(1)</script>")])
     assert "<script>" not in serialized
     assert "&lt;script&gt;" in serialized
+
+
+# -- block-edit control: convert exactly one targeted block --------------------
+
+
+def test_block_edit_converts_only_the_targeted_block():
+    """Hovering Block A and converting must not touch Block B."""
+    blocks = [
+        Block.text_block("Alpha"),
+        Block.text_block("Beta"),
+        Block.text_block("Gamma"),
+    ]
+    result = convert_selected_blocks(blocks, [1], BlockType.HEADING_1)
+    assert [(b.kind, b.text) for b in result] == [
+        (BlockType.TEXT, "Alpha"),
+        (BlockType.HEADING_1, "Beta"),
+        (BlockType.TEXT, "Gamma"),
+    ]
+
+
+def test_block_edit_conversion_never_inserts_a_duplicate_block():
+    blocks = [Block.text_block("Alpha"), Block.text_block("Beta")]
+    for kind in (
+        BlockType.HEADING_1,
+        BlockType.HEADING_2,
+        BlockType.HEADING_3,
+        BlockType.TODO,
+        BlockType.BULLET,
+        BlockType.NUMBERED,
+        BlockType.QUOTE,
+        BlockType.TEXT,
+    ):
+        result = convert_selected_blocks(blocks, [0], kind)
+        assert len(result) == len(blocks)
+        assert result[0].text == "Alpha"
+        assert result[1].text == "Beta"
+
+
+def test_block_edit_conversion_preserves_inline_formatting():
+    marks = (InlineMark(MarkType.BOLD), InlineMark(MarkType.HIGHLIGHT, "yellow"))
+    blocks = [
+        Block.text_block("Plain"),
+        Block(kind=BlockType.TEXT, runs=[InlineRun("Rich", marks)]),
+    ]
+    result = convert_selected_blocks(blocks, [1], BlockType.QUOTE)
+    assert result[1].kind == BlockType.QUOTE
+    assert result[1].runs == blocks[1].runs
+    assert result[0].kind == BlockType.TEXT  # untouched neighbour
+
+
+def test_targeting_a_different_block_next_time_affects_only_that_block():
+    blocks = [Block.text_block("A"), Block.text_block("B")]
+    first = convert_selected_blocks(blocks, [0], BlockType.QUOTE)
+    second = convert_selected_blocks(first, [1], BlockType.HEADING_2)
+    assert [(b.kind, b.text) for b in second] == [
+        (BlockType.QUOTE, "A"),
+        (BlockType.HEADING_2, "B"),
+    ]

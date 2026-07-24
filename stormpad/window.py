@@ -407,6 +407,8 @@ class MainController(NSObject):
         self._editor.transcript_target = self
         self._editor.notes_dir = self._store.notes_dir
         self._editor.set_block_controls_enabled(self._prefs.show_block_controls)
+        self._editor.set_color_recents(self._prefs.recent_colors)
+        self._editor.on_color_used = self._record_recent_color
 
         editor_col = flipped_view()
         editor_col.setWantsLayer_(True)
@@ -1331,6 +1333,29 @@ class MainController(NSObject):
         if pruned != stored:
             self._prefs.pinned_note_ids = pruned
         return pruned
+
+    @objc.python_method
+    def rename_project_inline(self, project_id: str, name: str) -> None:
+        """Commit an inline (double-click) project rename.
+
+        Reuses the same store call as the context-menu Rename Project, so the
+        project UUID is unchanged, notes stay inside it, unsafe filesystem
+        characters are sanitised, and duplicate names get a unique folder.
+        """
+        cleaned = str(name).strip()
+        if not cleaned:
+            return
+        self._autosave.flush()
+        try:
+            self._store.rename_project(project_id, cleaned)
+        except (InvalidProjectError, ProjectNotFoundError, StorageError, OSError) as exc:
+            self._alert("Could not rename project", str(exc))
+        self._apply_filter()  # refreshes the header, counts, and note tags
+
+    @objc.python_method
+    def _record_recent_color(self, entry: str) -> None:
+        """Persist the applied colour and refresh the palette's recents."""
+        self._editor.set_color_recents(self._prefs.record_recent_color(entry))
 
     @objc.python_method
     def _on_pin_filter_changed(self, pinned_only: bool) -> None:

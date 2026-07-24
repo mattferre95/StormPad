@@ -291,10 +291,15 @@ def test_add_block_menu_state():
 
 @pytest.mark.parametrize("text_x", [72.0, 92.0, 160.0])
 def test_block_gutter_geometry_never_overlaps_text(text_x):
+    """Both gutter controls stay wholly outside the text column."""
     layout = block_gutter_layout(text_x, 240.0)
     assert layout.does_not_overlap_text
-    assert layout.add.max_x == text_x - layout.clearance
-    assert layout.add.y == 240.0
+    # The block-edit control is the inner one, nearest the text column.
+    assert layout.edit.max_x == text_x - layout.clearance
+    # The + sits to its left, and the two never overlap each other.
+    assert layout.add.max_x <= layout.edit.x
+    assert layout.controls_do_not_overlap
+    assert layout.add.y == layout.edit.y == 240.0
 
 
 def test_block_gutter_scroll_offset_mapping():

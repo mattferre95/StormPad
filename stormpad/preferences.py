@@ -35,6 +35,8 @@ _KEY_SELECTED_PROJECT = "selected_project_id"
 _KEY_PROJECTS_COLLAPSED = "projects_collapsed"
 _KEY_PROJECT_ORDER = "project_order"
 _KEY_PINNED_NOTES = "pinned_note_ids"
+_KEY_RECENT_COLORS = "recent_colors"
+RECENT_COLOR_LIMIT = 4
 
 
 class PreferencesBackend(Protocol):
@@ -206,3 +208,40 @@ class Preferences:
     def pinned_note_ids(self, values: list[str]) -> None:
         unique = list(dict.fromkeys(value for value in values if value))
         self._backend.set(_KEY_PINNED_NOTES, json.dumps(unique))
+
+    # -- Recently used colors ------------------------------------------------
+
+    @property
+    def recent_colors(self) -> list[str]:
+        """Recently applied colors as ``"mode:token"``, most recent first.
+
+        Small and bounded (see :data:`RECENT_COLOR_LIMIT`) — not a history
+        system. Corrupt/invalid payloads fall back to an empty list.
+        """
+        raw = self._backend.get(_KEY_RECENT_COLORS)
+        if not raw:
+            return []
+        try:
+            values = json.loads(raw)
+        except (TypeError, json.JSONDecodeError):
+            return []
+        if not isinstance(values, list):
+            return []
+        result: list[str] = []
+        for value in values:
+            if isinstance(value, str) and ":" in value and value not in result:
+                result.append(value)
+        return result[:RECENT_COLOR_LIMIT]
+
+    @recent_colors.setter
+    def recent_colors(self, values: list[str]) -> None:
+        unique = list(dict.fromkeys(v for v in values if v and ":" in v))
+        self._backend.set(_KEY_RECENT_COLORS, json.dumps(unique[:RECENT_COLOR_LIMIT]))
+
+    def record_recent_color(self, entry: str) -> list[str]:
+        """Push ``"mode:token"`` to the front of the recents and persist."""
+        if not entry or ":" not in entry:
+            return self.recent_colors
+        updated = [entry, *(v for v in self.recent_colors if v != entry)]
+        self.recent_colors = updated
+        return self.recent_colors
