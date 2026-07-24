@@ -28,13 +28,9 @@ Do not use captures containing personal notes.
 ## Download configuration
 
 The clearly named `DOWNLOAD_URL` and `DOWNLOAD_AVAILABLE` constants are at the
-top of `site/script.js`.
-
-Keep `DOWNLOAD_AVAILABLE` set to `false` during local development and until the
-official DMG exists. In that state, download buttons show an availability
-message and never start a request. Once the DMG is published at the configured
-URL, set the flag to `true`. A click will then start the download and open the
-accessible installation guide.
+top of `site/script.js`. They point to the published `v0.1.0-beta.1` GitHub
+prerelease. A click starts the DMG download and opens the accessible
+installation guide.
 
 ## GitHub Pages
 

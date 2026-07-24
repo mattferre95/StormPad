@@ -1,8 +1,7 @@
 const DOWNLOAD_URL =
-  "https://github.com/mattferre95/StormPad/releases/latest/download/StormPad-0.1.0.dmg";
+  "https://github.com/mattferre95/StormPad/releases/download/v0.1.0-beta.1/StormPad-0.1.0.dmg";
 
-// Change to true only after the official DMG exists at DOWNLOAD_URL.
-const DOWNLOAD_AVAILABLE = false;
+const DOWNLOAD_AVAILABLE = true;
 
 const header = document.querySelector("[data-header]");
 const modal = document.querySelector("[data-modal]");
