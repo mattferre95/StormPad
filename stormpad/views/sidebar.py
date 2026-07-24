@@ -40,6 +40,7 @@ from AppKit import (
     NSViewWidthSizable,
 )
 from Foundation import NSAttributedString, NSMakeRect, NSPointInRect, NSTimer
+from Quartz import CATransaction
 
 from ..dragdrop import (
     NOTE_PASTEBOARD_TYPE,
@@ -402,6 +403,8 @@ class SidebarRow(FlippedView):
     def mouseEntered_(self, event):  # noqa: N802
         self._hovered = True
         if self._is_child_shortcut:
+            if not self._selected:
+                self._reset_child_surface()
             if not self._selected and self._palette is not None:
                 self._name.setTextColor_(self._palette.text_primary)
             return
@@ -530,21 +533,77 @@ class SidebarRow(FlippedView):
 
     def set_child_selected(self, selected: bool, palette: Palette) -> None:
         """Synchronously reset and repaint a single-active child shortcut."""
-        self._selected = bool(selected)
         self._palette = palette
+        self._reset_child_surface()
+        self._selected = bool(selected)
+        self._emphasized = self._selected
+        if self._selected:
+            self._set_child_layer_surface(
+                palette.selected_background,
+                1.0,
+                palette.selected_border,
+            )
+        self._apply_selection_text(selected, palette)
+
+    @objc.python_method
+    def _reset_child_surface(self) -> None:
+        """Clear every AppKit surface that can outlive child-row selection."""
+        self._selected = False
         self._drop_target = False
         self._drag_lifted = False
         self._drag_started = False
+        self._mouse_down_point = None
         self._hovered = False
-        self._emphasized = self._selected
+        self._emphasized = False
         self._surface_applied = True
+        self._set_child_layer_surface(
+            NSColor.clearColor(),
+            0.0,
+            NSColor.clearColor(),
+        )
+        for control in (
+            self,
+            getattr(self, "_name", None),
+            getattr(self, "_icon", None),
+            getattr(self, "_count", None),
+        ):
+            if control is None:
+                continue
+            if hasattr(control, "setHighlighted_"):
+                control.setHighlighted_(False)
+            if hasattr(control, "setState_"):
+                control.setState_(0)
+            cell = control.cell() if hasattr(control, "cell") else None
+            if cell is not None and hasattr(cell, "setHighlighted_"):
+                cell.setHighlighted_(False)
+        name = getattr(self, "_name", None)
+        if name is not None:
+            name.setDrawsBackground_(False)
+            name.setBackgroundColor_(NSColor.clearColor())
+
+    @objc.python_method
+    def _set_child_layer_surface(
+        self,
+        background: NSColor,
+        border_width: float,
+        border_color: NSColor,
+    ) -> None:
+        """Update model and presentation state without implicit animations."""
         layer = self.layer()
         layer.removeAllAnimations()
-        self._paint_surface(self._selected)
-        # A previous implicit selection transition can otherwise remain in the
-        # presentation layer after the model layer has already become clear.
+        CATransaction.begin()
+        try:
+            CATransaction.setDisableActions_(True)
+            self.setBackgroundColor_(background)
+            layer.setBackgroundColor_(background.CGColor())
+            layer.setBorderWidth_(float(border_width))
+            layer.setBorderColor_(border_color.CGColor())
+            layer.setShadowOpacity_(0.0)
+            layer.setShadowRadius_(0.0)
+            layer.setShadowOffset_((0.0, 0.0))
+        finally:
+            CATransaction.commit()
         layer.removeAllAnimations()
-        self._apply_selection_text(selected, palette)
 
     @objc.python_method
     def _apply_selection_text(self, selected: bool, palette: Palette) -> None:
@@ -906,10 +965,6 @@ class Sidebar:
         row.setFrame_(NSMakeRect(16, y, 202, 30))
         row.setWantsLayer_(True)
         row.layer().setCornerRadius_(7.0)
-        row.layer().removeAllAnimations()
-        row.setBackgroundColor_(NSColor.clearColor())
-        row.layer().setBorderWidth_(0.0)
-        row.layer().setBorderColor_(NSColor.clearColor().CGColor())
         parent.addSubview_(row)
 
         name = label(
@@ -923,6 +978,8 @@ class Sidebar:
         row._icon_is_symbol = False
         row._name = name
         row._count = None
+        row._reset_child_surface()
+        row._apply_selection_text(False, self.palette)
         row.registerForDraggedTypes_(
             [PROJECT_PASTEBOARD_TYPE, NOTE_PASTEBOARD_TYPE]
         )

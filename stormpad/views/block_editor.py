@@ -22,6 +22,7 @@ from AppKit import (
     NSBoldFontMask,
     NSButton,
     NSColor,
+    NSDirectionalEdgeInsetsMake,
     NSDragOperationCopy,
     NSEventModifierFlagOption,
     NSFilenamesPboardType,
@@ -124,6 +125,8 @@ _ZERO_WIDTH = "\u200b"
 _LINE_SEPARATOR = "\u2028"
 _BODY_INSET = 92.0
 _TODO_TEXT_GAP = 9.0
+_CARET_BOTTOM_MARGIN = 88.0
+_EDITOR_BOTTOM_INSET = 200.0
 # Divider block: a deliberate inset from the writing margins, and the vertical
 # room the rule occupies on its own line.
 _DIVIDER_INSET = 6.0
@@ -581,6 +584,9 @@ class Editor(NSObject):
         self._pending_return_token = 0
         self._pending_return_timer = None
         self._pending_return_note_id: str | None = None
+        self._pending_caret_visibility_token = 0
+        self._pending_caret_visibility_timer = None
+        self._pending_caret_visibility_note_id: str | None = None
         self._full_note_selected = False
         self._setting_full_note_selection = False
         self.notes_dir: Path | None = None
@@ -629,6 +635,10 @@ class Editor(NSObject):
         scroll.setBorderType_(NSNoBorder)
         scroll.setHasVerticalScroller_(True)
         scroll.setAutohidesScrollers_(True)
+        scroll.setAutomaticallyAdjustsContentInsets_(False)
+        scroll.setContentInsets_(
+            NSDirectionalEdgeInsetsMake(0.0, 0.0, _EDITOR_BOTTOM_INSET, 0.0)
+        )
         if hasattr(scroll, "setScrollerStyle_"):
             scroll.setScrollerStyle_(NSScrollerStyleOverlay)
         pin_edges(
@@ -774,6 +784,7 @@ class Editor(NSObject):
     @objc.python_method
     def load_note(self, note: Note) -> None:
         self._cancel_pending_return()
+        self._cancel_pending_caret_visibility()
         self._loading = True
         try:
             self._clear_full_note_selection_visual()
@@ -802,6 +813,7 @@ class Editor(NSObject):
 
     def clear(self) -> None:
         self._cancel_pending_return()
+        self._cancel_pending_caret_visibility()
         self._clear_full_note_selection_visual()
         self._current = None
         self.view.setHidden_(True)
@@ -2232,6 +2244,164 @@ class Editor(NSObject):
             timer.invalidate()
 
     @objc.python_method
+    def _cancel_pending_caret_visibility(self) -> None:
+        self._pending_caret_visibility_token += 1
+        timer = self._pending_caret_visibility_timer
+        self._pending_caret_visibility_timer = None
+        self._pending_caret_visibility_note_id = None
+        if timer is not None:
+            timer.invalidate()
+
+    @objc.python_method
+    def _caret_context_is_active(
+        self,
+        note_id: str | None,
+        block_index: int,
+        text_view,
+    ) -> bool:
+        current_id = self._current.id if self._current is not None else None
+        return (
+            text_view is self._body
+            and current_id == note_id
+            and self.body_is_first_responder()
+            and self._current_block_index() == block_index
+        )
+
+    @objc.python_method
+    def _schedule_caret_visibility(self, text_view) -> None:
+        """Check the moved caret after AppKit completes text layout."""
+        self._cancel_pending_caret_visibility()
+        text_view.layoutManager().ensureLayoutForTextContainer_(
+            text_view.textContainer()
+        )
+        token = self._pending_caret_visibility_token
+        note_id = self._current.id if self._current is not None else None
+        block_index = self._current_block_index()
+        self._pending_caret_visibility_note_id = note_id
+
+        def fire(_timer):
+            self._perform_pending_caret_visibility(
+                token,
+                note_id,
+                block_index,
+                text_view,
+            )
+
+        self._pending_caret_visibility_timer = (
+            NSTimer.scheduledTimerWithTimeInterval_repeats_block_(
+                0.01,
+                False,
+                fire,
+            )
+        )
+
+    @objc.python_method
+    def _perform_pending_caret_visibility(
+        self,
+        token: int,
+        note_id: str | None,
+        block_index: int,
+        text_view,
+    ) -> None:
+        if token != self._pending_caret_visibility_token:
+            return
+        try:
+            if not self._caret_context_is_active(note_id, block_index, text_view):
+                return
+            self._scroll_caret_into_comfortable_view(text_view)
+        finally:
+            if token == self._pending_caret_visibility_token:
+                self._pending_caret_visibility_token += 1
+                self._pending_caret_visibility_timer = None
+                self._pending_caret_visibility_note_id = None
+
+    @objc.python_method
+    def _scroll_caret_into_comfortable_view(self, text_view) -> bool:
+        """Minimally reveal the actual insertion rect, preserving horizontal scroll."""
+        selected = text_view.selectedRange()
+        if int(selected.length) != 0:
+            return False
+        did_scroll = False
+        # NSTextView can finalize its document height as the first scroll is
+        # applied. Re-measure once so a newly inserted tall block cannot leave
+        # the actual insertion rect outside the final clip bounds.
+        for _layout_pass in range(2):
+            caret_in_document = self._caret_rect_in_document(
+                text_view,
+                int(selected.location),
+            )
+
+            clip = self._scroll.contentView()
+            visible = clip.bounds()
+            visible_top = float(visible.origin.y)
+            visible_bottom = visible_top + float(visible.size.height)
+            bottom_inset = float(self._scroll.contentInsets().bottom)
+            caret_top = float(caret_in_document.origin.y)
+            caret_bottom = caret_top + max(
+                1.0,
+                float(caret_in_document.size.height),
+            )
+            comfortable_top = visible_top + 8.0
+            comfortable_bottom = (
+                visible_bottom + bottom_inset - _CARET_BOTTOM_MARGIN
+            )
+
+            if comfortable_top <= caret_top and caret_bottom <= comfortable_bottom:
+                return did_scroll
+            if caret_bottom > comfortable_bottom:
+                target_y = (
+                    caret_bottom
+                    + _CARET_BOTTOM_MARGIN
+                    - float(visible.size.height)
+                    - bottom_inset
+                )
+            else:
+                target_y = caret_top - 8.0
+
+            document = self._scroll.documentView()
+            document_height = max(
+                float(document.frame().size.height),
+                float(document.bounds().size.height),
+            )
+            maximum_y = max(
+                0.0,
+                document_height
+                - float(visible.size.height)
+                + _EDITOR_BOTTOM_INSET,
+            )
+            target_y = min(max(0.0, target_y), maximum_y)
+            if abs(target_y - visible_top) < 0.5:
+                return did_scroll
+            clip.scrollToPoint_(NSMakePoint(float(visible.origin.x), target_y))
+            self._scroll.reflectScrolledClipView_(clip)
+            did_scroll = True
+        return did_scroll
+
+    @objc.python_method
+    def _caret_rect_in_document(self, text_view, location: int):
+        """Convert the active NSTextView insertion rect into document coordinates."""
+        layout = text_view.layoutManager()
+        container = text_view.textContainer()
+        layout.ensureLayoutForTextContainer_(container)
+        glyph_range = layout.glyphRangeForCharacterRange_actualCharacterRange_(
+            NSMakeRange(int(location), 0),
+            None,
+        )
+        if isinstance(glyph_range, tuple):
+            glyph_range = glyph_range[0]
+        caret = layout.boundingRectForGlyphRange_inTextContainer_(
+            glyph_range,
+            container,
+        )
+        inset = text_view.textContainerInset()
+        return NSMakeRect(
+            float(caret.origin.x) + float(inset.width),
+            float(caret.origin.y) + float(inset.height),
+            max(1.0, float(caret.size.width)),
+            max(1.0, float(caret.size.height)),
+        )
+
+    @objc.python_method
     def _return_context_is_active(self, note_id: str | None, text_view) -> bool:
         current_id = self._current.id if self._current is not None else None
         return (
@@ -2315,10 +2485,12 @@ class Editor(NSObject):
             )
             self._select_block_start(destination)
             self.focus_body()
+            self._schedule_caret_visibility(self._body)
             return
         if block.is_empty and block.kind != BlockType.TEXT:
             blocks[index] = empty_return_result(block)
             self._replace_document(blocks, register_undo=True, focus_index=index)
+            self._schedule_caret_visibility(self._body)
             return
 
         if block.kind in PARAGRAPH_BLOCK_TYPES:
@@ -2353,6 +2525,7 @@ class Editor(NSObject):
         )
         self._select_block_start(destination)
         self.focus_body()
+        self._schedule_caret_visibility(self._body)
 
     def control_textView_doCommandBySelector_(  # noqa: N802
         self, control, text_view, selector
@@ -2500,6 +2673,7 @@ class Editor(NSObject):
                     register_undo=True,
                     focus_index=destination,
                 )
+                self._schedule_caret_visibility(self._body)
                 return True
             if block.kind != BlockType.TEXT:
                 blocks[index] = backspace_empty_result(block)

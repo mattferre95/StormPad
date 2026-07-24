@@ -254,18 +254,31 @@ def test_appkit_child_rows_clear_actual_surface_when_active_uuid_changes():
     child_a = child("A", 0)
     child_b = child("B", 40)
 
+    def layer_color(row):
+        return NSColor.colorWithCGColor_(row.layer().backgroundColor())
+
     def assert_inactive(row):
         assert row._selected is False
         assert row._hovered is False
         assert row._drop_target is False
         assert row._drag_lifted is False
         assert row.backgroundColor().isEqual_(NSColor.clearColor())
+        assert layer_color(row).isEqual_(NSColor.clearColor())
         assert float(row.layer().borderWidth()) == 0.0
+        presentation = row.layer().presentationLayer()
+        if presentation is not None:
+            assert NSColor.colorWithCGColor_(
+                presentation.backgroundColor()
+            ).isEqual_(NSColor.clearColor())
+            assert float(presentation.borderWidth()) == 0.0
+        assert row._name.drawsBackground() is False
+        assert row._name.cell().isHighlighted() is False
         assert not row.layer().animationKeys()
 
     def assert_only_active(active, inactive):
         assert active._selected is True
         assert active.backgroundColor().isEqual_(palette.selected_background)
+        assert layer_color(active).isEqual_(palette.selected_background)
         assert float(active.layer().borderWidth()) == 1.0
         assert_inactive(inactive)
         assert sum((child_a._selected, child_b._selected)) == 1
