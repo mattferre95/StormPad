@@ -67,6 +67,28 @@ def filter_by_project(notes: list[Note], project_id: str | None) -> list[Note]:
     return [note for note in notes if note.project_id == project_id]
 
 
+def filter_by_pinned(notes: list[Note], pinned_ids) -> list[Note]:
+    """Return only notes whose stable id is pinned, preserving list order.
+
+    Works across projects and Unfiled because it matches on the note's stable
+    UUID only. Unknown/stale ids simply match nothing.
+    """
+    pinned = set(pinned_ids or ())
+    if not pinned:
+        return []
+    return [note for note in notes if note.id in pinned]
+
+
+def prune_pinned_ids(pinned_ids, existing_ids) -> list[str]:
+    """Drop pinned ids whose notes no longer exist, preserving pin order."""
+    existing = set(existing_ids or ())
+    result: list[str] = []
+    for note_id in pinned_ids or ():
+        if note_id in existing and note_id not in result:
+            result.append(note_id)
+    return result
+
+
 def _spans(text: str, pattern: re.Pattern[str], field_name: str) -> list[Match]:
     return [Match(field_name, m.start(), m.end()) for m in pattern.finditer(text)]
 

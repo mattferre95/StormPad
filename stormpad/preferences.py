@@ -34,6 +34,7 @@ _KEY_SHOW_BLOCK_CONTROLS = "show_block_controls"
 _KEY_SELECTED_PROJECT = "selected_project_id"
 _KEY_PROJECTS_COLLAPSED = "projects_collapsed"
 _KEY_PROJECT_ORDER = "project_order"
+_KEY_PINNED_NOTES = "pinned_note_ids"
 
 
 class PreferencesBackend(Protocol):
@@ -175,3 +176,33 @@ class Preferences:
     def project_order(self, values: list[str]) -> None:
         unique = list(dict.fromkeys(value for value in values if value))
         self._backend.set(_KEY_PROJECT_ORDER, json.dumps(unique))
+
+    # -- Pinned notes -------------------------------------------------------
+
+    @property
+    def pinned_note_ids(self) -> list[str]:
+        """Ordered, de-duplicated stable note UUIDs the user has pinned.
+
+        Defensive: a missing/corrupt value yields an empty list. Stale ids for
+        deleted notes are harmless here and are pruned by the caller against the
+        notes that actually exist.
+        """
+        raw = self._backend.get(_KEY_PINNED_NOTES)
+        if not raw:
+            return []
+        try:
+            values = json.loads(raw)
+        except (TypeError, json.JSONDecodeError):
+            return []
+        if not isinstance(values, list):
+            return []
+        result: list[str] = []
+        for value in values:
+            if isinstance(value, str) and value and value not in result:
+                result.append(value)
+        return result
+
+    @pinned_note_ids.setter
+    def pinned_note_ids(self, values: list[str]) -> None:
+        unique = list(dict.fromkeys(value for value in values if value))
+        self._backend.set(_KEY_PINNED_NOTES, json.dumps(unique))

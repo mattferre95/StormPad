@@ -39,6 +39,7 @@ from AppKit import (
     NSScrollerStyleOverlay,
     NSScrollView,
     NSTextAttachment,
+    NSTextAttachmentCell,
     NSTextField,
     NSTextView,
     NSTimer,
@@ -53,7 +54,7 @@ from AppKit import (
     NSViewWidthSizable,
     NSWorkspace,
 )
-from Foundation import NSURL, NSMakeRange, NSMakeRect, NSMakeSize, NSObject
+from Foundation import NSURL, NSMakePoint, NSMakeRange, NSMakeRect, NSMakeSize, NSObject
 
 from .. import attachments
 from ..block_parser import parse_blocks
@@ -110,6 +111,60 @@ _ATTR_TRANSCRIPT_CHUNK = "StormPadTranscriptChunk"
 _ZERO_WIDTH = "\u200b"
 _LINE_SEPARATOR = "\u2028"
 _BODY_INSET = 92.0
+# Divider block: a deliberate inset from the writing margins, and the vertical
+# room the rule occupies on its own line.
+_DIVIDER_INSET = 6.0
+_DIVIDER_ROW_HEIGHT = 13.0
+_DIVIDER_MIN_WIDTH = 24.0
+_DIVIDER_THICKNESS = 1.0
+
+
+class DividerAttachmentCell(NSTextAttachmentCell):
+    """Draws a horizontal rule that spans the editor's usable text width.
+
+    The width comes from the proposed line-fragment rect supplied by the text
+    system, so the rule follows the real writing canvas: it re-lays out for free
+    on window resize, fullscreen, and notes-panel collapse, stays aligned with
+    the note's text, and never reaches under the block gutter (which lives
+    outside the text container inset).
+    """
+
+    def initWithColor_(self, color):  # noqa: N802
+        self = objc.super(DividerAttachmentCell, self).init()
+        if self is None:
+            return None
+        self._rule_color = color
+        return self
+
+    def cellSize(self):  # noqa: N802
+        return NSMakeSize(_DIVIDER_MIN_WIDTH, _DIVIDER_ROW_HEIGHT)
+
+    def cellBaselineOffset(self):  # noqa: N802
+        return NSMakePoint(0.0, -4.0)
+
+    def cellFrameForTextContainer_proposedLineFragment_glyphPosition_characterIndex_(  # noqa: N802
+        self, container, line_fragment, position, char_index
+    ):
+        available = float(line_fragment.size.width) - float(position.x)
+        return NSMakeRect(
+            0.0, 0.0, max(_DIVIDER_MIN_WIDTH, available), _DIVIDER_ROW_HEIGHT
+        )
+
+    def drawWithFrame_inView_(self, frame, view):  # noqa: N802
+        color = getattr(self, "_rule_color", None)
+        if color is None:
+            return
+        width = float(frame.size.width) - (_DIVIDER_INSET * 2.0)
+        if width <= 0:
+            return
+        rule = NSMakeRect(
+            float(frame.origin.x) + _DIVIDER_INSET,
+            float(frame.origin.y) + (float(frame.size.height) - _DIVIDER_THICKNESS) / 2.0,
+            width,
+            _DIVIDER_THICKNESS,
+        )
+        color.set()
+        NSBezierPath.fillRect_(rule)
 _BLOCK_MENU: tuple[tuple[str, BlockType, str], ...] = (
     ("Text", BlockType.TEXT, "text.alignleft"),
     ("Heading 1", BlockType.HEADING_1, "textformat.size.larger"),
@@ -622,11 +677,19 @@ class Editor(NSObject):
             divider_attrs[_ATTR_DECORATION] = "divider"
             divider_attrs[_ATTR_READ_ONLY] = True
             divider_attrs[NSForegroundColorAttributeName] = self._palette.divider_line
-            result.appendAttributedString_(
-                NSAttributedString.alloc().initWithString_attributes_(
-                    "────────────────────────", divider_attrs
-                )
+            # A width-tracking attachment rather than a fixed run of glyphs, so
+            # the rule follows the editor's content width. Markdown stays "---".
+            attachment = NSTextAttachment.alloc().init()
+            attachment.setAttachmentCell_(
+                DividerAttachmentCell.alloc().initWithColor_(self._palette.divider_line)
             )
+            divider_string = NSMutableAttributedString.alloc().initWithAttributedString_(
+                NSAttributedString.attributedStringWithAttachment_(attachment)
+            )
+            divider_string.addAttributes_range_(
+                divider_attrs, NSMakeRange(0, divider_string.length())
+            )
+            result.appendAttributedString_(divider_string)
             return result
 
         if block.kind == BlockType.RAW:

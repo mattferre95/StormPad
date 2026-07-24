@@ -76,7 +76,13 @@ from .models import (
     now_local,
 )
 from .preferences import Preferences
-from .search import filter_by_category, filter_by_project, search_notes
+from .search import (
+    filter_by_category,
+    filter_by_pinned,
+    filter_by_project,
+    prune_pinned_ids,
+    search_notes,
+)
 from .session import NoteStore
 from .sharing import ShareExportManager
 from .speech import SpeechController, SpeechUnavailableError
@@ -137,6 +143,8 @@ class MainController(NSObject):
         self._query = os.environ.get("STORMPAD_INITIAL_QUERY", "").strip()
         self._current_id: str | None = self._prefs.last_note_id
         self._displayed: list = []
+        # STORMPAD_PIN_FILTER is a dev/test hook to boot into the Pinned filter.
+        self._pinned_only = bool(os.environ.get("STORMPAD_PIN_FILTER"))
         self._dev_notes_collapsed = True if os.environ.get("STORMPAD_COLLAPSE_NOTES") else None
 
         self._autosave = AutosaveController(
@@ -387,6 +395,8 @@ class MainController(NSObject):
             self._palette, self._on_note_selected, self._toggle_notes_panel
         )
         self._note_list.set_menu_provider(self._note_context_menu)
+        self._note_list.set_filter_handler(self._on_pin_filter_changed)
+        self._note_list.set_pinned_only(self._pinned_only)
         self._editor = Editor.alloc().initWithPalette_onTitle_onBody_onAttachment_(
             self._palette,
             self._on_title_edited,
@@ -687,6 +697,14 @@ class MainController(NSObject):
         self._project_id = self._validated_project_id(projects)
         counts = self._update_counts(all_notes, projects)
 
+        # Drop pins for notes that no longer exist, then hand presentation state
+        # to the list (pin indicators + Project-name tags).
+        pinned_ids = self._pinned_ids(all_notes)
+        self._note_list.set_pinned_ids(pinned_ids)
+        self._note_list.set_project_names(
+            {project.id: project.name for project in projects}
+        )
+
         if self._query:
             results = search_notes(
                 all_notes,
@@ -706,6 +724,13 @@ class MainController(NSObject):
             header = self._navigation_header(projects)
             n = len(displayed)
             subtitle = f"{n} note{'s' if n != 1 else ''}"
+
+        # The Pinned filter narrows whatever the current view already shows, so
+        # search and project filtering keep working underneath it.
+        if self._pinned_only:
+            displayed = filter_by_pinned(displayed, pinned_ids)
+            n = len(displayed)
+            subtitle = f"{n} pinned note{'s' if n != 1 else ''}"
 
         self._displayed = displayed
         self._note_list.set_notes(displayed, header=header, subtitle=subtitle)
@@ -1299,8 +1324,47 @@ class MainController(NSObject):
         return parent
 
     @objc.python_method
+    def _pinned_ids(self, all_notes) -> list[str]:
+        """Stored pins with stale ids (deleted notes) pruned and persisted."""
+        stored = self._prefs.pinned_note_ids
+        pruned = prune_pinned_ids(stored, [note.id for note in all_notes])
+        if pruned != stored:
+            self._prefs.pinned_note_ids = pruned
+        return pruned
+
+    @objc.python_method
+    def _on_pin_filter_changed(self, pinned_only: bool) -> None:
+        self._pinned_only = bool(pinned_only)
+        self._apply_filter()
+
+    @objc.IBAction
+    def togglePinNote_(self, sender):  # noqa: N802
+        note_id = self._represented_string(sender) or self._current_id
+        if note_id is None:
+            return
+        pinned = self._prefs.pinned_note_ids
+        if note_id in pinned:
+            pinned = [item for item in pinned if item != note_id]
+        else:
+            pinned = [*pinned, note_id]
+        self._prefs.pinned_note_ids = pinned
+        self._apply_filter()
+
+    @objc.python_method
+    def _pin_menu_item(self, note):
+        pinned = note.id in set(self._prefs.pinned_note_ids)
+        item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+            "Unpin Note" if pinned else "Pin Note", "togglePinNote:", ""
+        )
+        item.setTarget_(self)
+        item.setRepresentedObject_(note.id)
+        return item
+
+    @objc.python_method
     def _note_context_menu(self, note):
         menu = NSMenu.alloc().initWithTitle_("Note")
+        menu.addItem_(self._pin_menu_item(note))
+        menu.addItem_(NSMenuItem.separatorItem())
         share = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
             "Share Note…", "shareNote:", ""
         )
@@ -1453,6 +1517,8 @@ class MainController(NSObject):
         )
         info(f"Project: {project.name if project is not None else UNFILED}")
         info(f"Words: {word_count(note_to_plain_text(note))}")
+        menu.addItem_(NSMenuItem.separatorItem())
+        menu.addItem_(self._pin_menu_item(note))
         menu.addItem_(NSMenuItem.separatorItem())
         menu.addItem_(self._move_to_project_item(note))
         if note.project_id is not None:

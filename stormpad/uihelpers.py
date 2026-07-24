@@ -15,7 +15,7 @@ from enum import StrEnum
 from .block_parser import parse_blocks
 from .blocks import BlockType
 from .exporter import note_to_plain_text
-from .models import CATEGORIES, DEFAULT_CATEGORY, Note
+from .models import ALL_NOTES, CATEGORIES, DEFAULT_CATEGORY, Note
 
 
 class SaveStatus(StrEnum):
@@ -24,6 +24,23 @@ class SaveStatus(StrEnum):
     SAVED = "Saved locally"
     SAVING = "Saving…"
     FAILED = "Save failed"
+
+
+def display_tag(note: Note, project_names: dict[str, str] | None = None) -> str | None:
+    """The tag shown on a note row: Project name if filed, else its Category.
+
+    Presentation only — the note's underlying Category is never modified. A note
+    whose project has been deleted (or whose name is unknown) falls back to its
+    Category so the row is never left untagged.
+    """
+    if note.project_id:
+        name = (project_names or {}).get(note.project_id)
+        if name:
+            return name
+    category = note.category
+    if category and category != ALL_NOTES:
+        return category
+    return None
 
 
 def preview_text(note: Note, *, max_len: int = 140) -> str:

@@ -12,15 +12,20 @@ import objc
 from AppKit import (
     NSBezierPath,
     NSButton,
+    NSControlSizeSmall,
     NSDragOperationMove,
     NSDragOperationNone,
     NSFont,
     NSGraphicsContext,
     NSImageOnly,
+    NSImageScaleProportionallyDown,
     NSInsetRect,
     NSNoBorder,
     NSPasteboardItem,
     NSScrollView,
+    NSSegmentedControl,
+    NSSegmentStyleRounded,
+    NSSegmentSwitchTrackingSelectOne,
     NSShadow,
     NSTableColumn,
     NSTableRowView,
@@ -31,11 +36,17 @@ from AppKit import (
 from Foundation import NSIndexSet, NSMakeRect, NSObject
 
 from ..dragdrop import NOTE_PASTEBOARD_TYPE, encode_drag_payload
-from ..models import ALL_NOTES, Note, now_local
-from ..uihelpers import format_relative, preview_text
-from .controls import FlippedView, flipped_view, label, rounded_view, solid_view
+from ..models import Note, now_local
+from ..uihelpers import display_tag, format_relative, preview_text
+from .controls import FlippedView, flipped_view, icon_view, label, rounded_view, solid_view
 from .layout import add, pin_edges, set_height, set_width
 from .palette import Palette, symbol_image
+
+# Compact All/Pinned filter segments.
+FILTER_ALL = 0
+FILTER_PINNED = 1
+_CHEVRON_BUTTON = 28.0  # square hit target
+_CHEVRON_POINT = 13.0  # symbol point size
 
 
 class _ThemedRowView(NSTableRowView):
@@ -119,6 +130,9 @@ class NoteList(NSObject):
         self._collapsed = False
         self._menu_provider = None
         self._dragging_note_id: str | None = None
+        self._pinned_ids: set[str] = set()
+        self._project_names: dict[str, str] = {}
+        self._on_filter: Callable[[bool], None] | None = None
         self._build()
         return self
 
@@ -135,20 +149,46 @@ class NoteList(NSObject):
         self._subtitle = add(self.view, label("", NSFont.systemFontOfSize_(11.5), p.text_muted))
         pin_edges(self._subtitle, self.view, top=80, leading=20, trailing=20, bottom=None)
 
+        # Collapse chevron — square hit target, proportional scaling so the SF
+        # Symbol keeps its aspect ratio and is never clipped or stretched.
         collapse = NSButton.alloc().init()
         collapse.setBordered_(False)
         collapse.setImagePosition_(NSImageOnly)
-        collapse.setImage_(symbol_image("chevron.left", size=12, weight="semibold"))
+        collapse.setImage_(
+            symbol_image("chevron.left", size=_CHEVRON_POINT, weight="semibold")
+        )
+        collapse.setImageScaling_(NSImageScaleProportionallyDown)
         collapse.setContentTintColor_(p.text_muted)
         collapse.setTarget_(self)
         collapse.setAction_("toggleCollapse:")
         collapse.setToolTip_("Collapse Notes")
         collapse.setAccessibilityLabel_("Collapse Notes")
         add(self.view, collapse)
-        pin_edges(collapse, self.view, top=52, leading=None, trailing=14, bottom=None)
-        set_width(collapse, 28)
-        set_height(collapse, 28)
+        # Vertically centred on the "All Notes" header (header top 54, ~22 tall).
+        pin_edges(collapse, self.view, top=51, leading=None, trailing=14, bottom=None)
+        set_width(collapse, _CHEVRON_BUTTON)
+        set_height(collapse, _CHEVRON_BUTTON)
         self._collapse_button = collapse
+
+        # Compact All / Pinned filter.
+        seg = NSSegmentedControl.alloc().init()
+        seg.setSegmentCount_(2)
+        seg.setSegmentStyle_(NSSegmentStyleRounded)
+        seg.setTrackingMode_(NSSegmentSwitchTrackingSelectOne)
+        seg.setControlSize_(NSControlSizeSmall)
+        seg.setFont_(NSFont.systemFontOfSize_(10.5))
+        seg.setLabel_forSegment_("All", FILTER_ALL)
+        seg.setLabel_forSegment_("Pinned", FILTER_PINNED)
+        seg.setSelectedSegment_(FILTER_ALL)
+        seg.setTarget_(self)
+        seg.setAction_("filterChanged:")
+        seg.setAccessibilityLabel_("Filter notes: All or Pinned")
+        seg.setToolTip_("Show all notes or only pinned notes")
+        add(self.view, seg)
+        pin_edges(seg, self.view, top=76, leading=None, trailing=14, bottom=None)
+        set_width(seg, 112)
+        set_height(seg, 20)
+        self._filter_control = seg
 
         scroll = add(self.view, NSScrollView.alloc().init())
         scroll.setDrawsBackground_(False)
@@ -176,18 +216,26 @@ class NoteList(NSObject):
         self._table = table
         self._scroll = scroll
 
+        # Collapsed-state chevron. Square and horizontally centred (previously it
+        # was pinned to both edges, which stretched the button), anchored near the
+        # top rather than centred in the window.
         tab = NSButton.alloc().init()
         tab.setBordered_(False)
         tab.setImagePosition_(NSImageOnly)
-        tab.setImage_(symbol_image("chevron.right", size=15, weight="semibold"))
+        tab.setImage_(
+            symbol_image("chevron.right", size=_CHEVRON_POINT, weight="semibold")
+        )
+        tab.setImageScaling_(NSImageScaleProportionallyDown)
         tab.setContentTintColor_(p.text_secondary)
         tab.setTarget_(self)
         tab.setAction_("toggleCollapse:")
         tab.setToolTip_("Expand Notes")
         tab.setAccessibilityLabel_("Expand Notes")
         add(self.view, tab)
-        pin_edges(tab, self.view, top=12, leading=7, trailing=7, bottom=None)
-        set_height(tab, 32)
+        pin_edges(tab, self.view, top=51, leading=None, trailing=None, bottom=None)
+        tab.centerXAnchor().constraintEqualToAnchor_(self.view.centerXAnchor()).setActive_(True)
+        set_width(tab, _CHEVRON_BUTTON)
+        set_height(tab, _CHEVRON_BUTTON)
         tab.setHidden_(True)
         self._collapsed_tab = tab
 
@@ -198,7 +246,9 @@ class NoteList(NSObject):
         self._notes = notes
         self._header.setStringValue_(header)
         self._subtitle.setStringValue_(subtitle)
-        self._collapsed_tab.setTitle_(str(len(notes)))
+        # The collapsed control is an image-only chevron: a title would draw on
+        # top of the glyph. Surface the count through the tooltip instead.
+        self._collapsed_tab.setToolTip_(f"Expand Notes ({len(notes)})")
         self._table.reloadData()
         if self._selected_id is not None:
             self.select_note_id(self._selected_id, notify=False)
@@ -210,6 +260,7 @@ class NoteList(NSObject):
             self._header,
             self._subtitle,
             self._collapse_button,
+            self._filter_control,
             self._scroll,
         ):
             view.setHidden_(self._collapsed)
@@ -218,6 +269,32 @@ class NoteList(NSObject):
     @objc.IBAction
     def toggleCollapse_(self, sender):  # noqa: N802
         self._on_collapse()
+
+    # -- pinned / tag presentation -------------------------------------------
+
+    @objc.python_method
+    def set_filter_handler(self, handler: Callable[[bool], None] | None) -> None:
+        """Called with True when the user selects Pinned, False for All."""
+        self._on_filter = handler
+
+    @objc.python_method
+    def set_pinned_only(self, pinned_only: bool) -> None:
+        self._filter_control.setSelectedSegment_(
+            FILTER_PINNED if pinned_only else FILTER_ALL
+        )
+
+    @objc.python_method
+    def set_pinned_ids(self, pinned_ids) -> None:
+        self._pinned_ids = set(pinned_ids or ())
+
+    @objc.python_method
+    def set_project_names(self, names: dict[str, str] | None) -> None:
+        self._project_names = dict(names or {})
+
+    @objc.IBAction
+    def filterChanged_(self, sender):  # noqa: N802
+        if self._on_filter is not None:
+            self._on_filter(int(sender.selectedSegment()) == FILTER_PINNED)
 
     @objc.python_method
     def select_note_id(self, note_id: str | None, *, notify: bool = True) -> None:
@@ -311,6 +388,7 @@ class NoteList(NSObject):
         )
 
         selected = note.id == self._selected_id
+        pinned = note.id in self._pinned_ids
         title = add(
             cell,
             label(
@@ -319,7 +397,18 @@ class NoteList(NSObject):
                 p.text_primary,
             ),
         )
-        pin_edges(title, cell, top=12, leading=16, trailing=16, bottom=None)
+        # Leave room for the restrained pin glyph when the note is pinned.
+        pin_edges(title, cell, top=12, leading=16, trailing=(34 if pinned else 16), bottom=None)
+
+        if pinned:
+            pin_icon = add(
+                cell, icon_view(symbol_image("pin.fill", size=10.5), p.text_muted)
+            )
+            pin_icon.setToolTip_("Pinned")
+            pin_icon.setAccessibilityLabel_("Pinned")
+            pin_edges(pin_icon, cell, top=14, leading=None, trailing=16, bottom=None)
+            set_width(pin_icon, 14)
+            set_height(pin_icon, 13)
 
         preview = add(
             cell, label(preview_text(note), NSFont.systemFontOfSize_(12.5), p.text_secondary)
@@ -336,16 +425,20 @@ class NoteList(NSObject):
         )
         pin_edges(date, cell, top=56, leading=16, trailing=None, bottom=None)
 
-        if note.category != ALL_NOTES:
+        # Project name when the note is filed, otherwise its Category. The
+        # underlying Category is never modified — this is presentation only.
+        tag = display_tag(note, self._project_names)
+        if tag:
             chip = add(cell, rounded_view(p.pill_background, 6.0))
             pin_edges(chip, cell, top=54, leading=None, trailing=16, bottom=None)
             set_height(chip, 18)
-            chip_label = add(
-                chip, label(note.category, NSFont.systemFontOfSize_(10), p.accent_strong)
-            )
+            chip_label = add(chip, label(tag, NSFont.systemFontOfSize_(10), p.accent_strong))
             pin_edges(chip_label, chip, top=3, leading=8, trailing=8, bottom=None)
-            # Width the chip to its label.
+            # Width the chip to its label, clamped so long Project names truncate
+            # cleanly; the full name stays available as a tooltip.
             chip_label.sizeToFit()
-            set_width(chip, float(chip_label.fittingSize().width) + 16.0)
+            set_width(chip, min(float(chip_label.fittingSize().width) + 16.0, 140.0))
+            chip.setToolTip_(tag)
+            chip_label.setToolTip_(tag)
 
         return cell
