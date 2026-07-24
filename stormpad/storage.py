@@ -36,6 +36,7 @@ from datetime import datetime
 from pathlib import Path
 
 from .errors import AtomicWriteError, FilenameRenameError
+from .icons import normalize_project_icon
 from .models import (
     CATEGORIES,
     DEFAULT_CATEGORY,
@@ -418,20 +419,18 @@ def unique_project_path(notes_dir: Path | str, name: str, *, excluding: Path | N
 
 def project_metadata(project: Project) -> str:
     """Serialize stable project metadata as deterministic UTF-8 JSON."""
-    return (
-        json.dumps(
-            {
-                "id": project.id,
-                "name": project.name,
-                "created_at": project.created_at.isoformat(),
-                "updated_at": project.updated_at.isoformat(),
-            },
-            ensure_ascii=False,
-            indent=2,
-            sort_keys=True,
-        )
-        + "\n"
-    )
+    payload = {
+        "id": project.id,
+        "name": project.name,
+        "created_at": project.created_at.isoformat(),
+        "updated_at": project.updated_at.isoformat(),
+    }
+    # Only written when set, so projects without an icon keep their existing
+    # metadata byte-for-byte.
+    icon = normalize_project_icon(project.icon)
+    if icon is not None:
+        payload["icon"] = icon
+    return json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
 
 
 def write_project(project: Project) -> None:
@@ -452,12 +451,16 @@ def read_project(path: Path) -> Project | None:
         return None
     if not name:
         return None
+    # An unknown or malformed icon is never fatal — the project falls back to
+    # the default folder.
+    icon = normalize_project_icon(payload.get("icon"))
     return Project(
         id=project_id,
         path=path,
         name=name,
         created_at=created,
         updated_at=updated,
+        icon=icon,
     )
 
 

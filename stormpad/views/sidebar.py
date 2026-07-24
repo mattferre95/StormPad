@@ -46,10 +46,18 @@ from ..dragdrop import (
     encode_drag_payload,
     insertion_index_for_row,
 )
+from ..icons import (
+    DEFAULT_PROJECT_SYMBOL,
+    project_icon_kind,
+    project_icon_payload,
+)
 from ..models import ALL_NOTES, CATEGORIES, UNFILED, UNFILED_PROJECT_ID, Project
+from ..motion import Motion
 from .controls import FlippedView, flipped_view, icon_view, label, rounded_view, solid_view
 from .layout import add, pin_edges, set_height, set_width
+from .motion import anim, can_animate, current_policy, run
 from .palette import Palette, symbol_image
+from .profile import build_profile_row
 
 _ICONS = {
     ALL_NOTES: "square.grid.2x2",
@@ -74,6 +82,9 @@ class SidebarRow(FlippedView):
             return None
         self.key = str(key)
         self._selected = False
+        self._emphasized = False
+        self._surface_applied = False
+        self._icon_is_symbol = True
         self._drop_target = False
         self._drag_lifted = False
         self._drag_started = False
@@ -176,10 +187,29 @@ class SidebarRow(FlippedView):
         self._name.setHidden_(True)
         self.addSubview_(field)
         self._rename_field = field
+        # Fade the field in so label → editable field reads as one control
+        # changing state rather than two views swapping.
+        self._fade_rename_field(field, appearing=True)
         window = self.window()
         if window is not None:
             window.makeFirstResponder_(field)
             field.currentEditor() and field.currentEditor().selectAll_(None)
+
+    @objc.python_method
+    def _fade_rename_field(self, field, *, appearing: bool) -> None:
+        duration = (
+            current_policy().duration(Motion.POPOVER) if can_animate(self) else 0.0
+        )
+        if duration <= 0.0:
+            field.setAlphaValue_(1.0 if appearing else 0.0)
+            return
+        field.setAlphaValue_(0.0 if appearing else 1.0)
+        run(
+            duration,
+            lambda animated: anim(field, animated).setAlphaValue_(
+                1.0 if appearing else 0.0
+            ),
+        )
 
     @objc.python_method
     def _end_inline_rename(self, commit: bool):
@@ -190,6 +220,8 @@ class SidebarRow(FlippedView):
         self._rename_field = None
         self._renaming = False
         field.setDelegate_(None)
+        # Remove synchronously: the field must never linger as an invisible
+        # first-responder overlay, and the row is about to be rebuilt anyway.
         field.removeFromSuperview()
         self._name.setHidden_(False)
         window = self.window()
@@ -247,6 +279,7 @@ class SidebarRow(FlippedView):
         menu = NSMenu.alloc().initWithTitle_("Project")
         for title, action in (
             ("Rename Project…", "renameProject:"),
+            ("Choose Icon…", "chooseProjectIcon:"),
             ("New Note in Project", "newNoteInProject:"),
             ("Share Project…", "shareProject:"),
             ("Reveal Project Folder in Finder", "revealProject:"),
@@ -267,15 +300,32 @@ class SidebarRow(FlippedView):
     def _apply_surface(self) -> None:
         if self._palette is None:
             return
-        palette = self._palette
         emphasized = self._selected or self._drop_target or self._drag_lifted
+        # Only an actual change animates. A freshly built row (or a repeated
+        # call) applies its surface immediately, so nothing flashes on rebuild.
+        changed = self._surface_applied and emphasized != self._emphasized
+        self._emphasized = emphasized
+        self._surface_applied = True
+        duration = (
+            current_policy().duration(Motion.SELECTION)
+            if changed and can_animate(self)
+            else 0.0
+        )
+        # Inside an animation group with implicit animation allowed, these layer
+        # colour changes interpolate; outside one they apply immediately.
+        run(duration, lambda _animated: self._paint_surface(emphasized))
+
+    @objc.python_method
+    def _paint_surface(self, emphasized: bool) -> None:
+        palette = self._palette
         self.setBackgroundColor_(
             palette.selected_background
             if emphasized
             else NSColor.clearColor()
         )
-        self.layer().setBorderWidth_(1.5 if self._drop_target else (1.0 if emphasized else 0.0))
-        self.layer().setBorderColor_(
+        layer = self.layer()
+        layer.setBorderWidth_(1.5 if self._drop_target else (1.0 if emphasized else 0.0))
+        layer.setBorderColor_(
             palette.accent_strong.CGColor()
             if self._drop_target
             else (
@@ -284,6 +334,7 @@ class SidebarRow(FlippedView):
                 else NSColor.clearColor().CGColor()
             )
         )
+        # Drag lift is a grab feedback, never an animated transition.
         self.layer().setShadowOpacity_(0.2 if self._drag_lifted else 0.0)
         self.layer().setShadowRadius_(7.0 if self._drag_lifted else 0.0)
         self.layer().setShadowOffset_((0.0, -2.0))
@@ -306,9 +357,12 @@ class SidebarRow(FlippedView):
         self._count.setTextColor_(
             palette.text_secondary if selected else palette.text_muted
         )
-        self._icon.setContentTintColor_(
-            palette.accent_strong if selected else palette.text_muted
-        )
+        # An emoji icon is a text label, not a tintable template image — it keeps
+        # its own colours.
+        if self._icon_is_symbol:
+            self._icon.setContentTintColor_(
+                palette.accent_strong if selected else palette.text_muted
+            )
 
     def draggingSession_sourceOperationMaskForDraggingContext_(  # noqa: N802
         self, session, context
@@ -366,8 +420,10 @@ class Sidebar:
         project_action_target,
         on_reorder_project,
         on_move_note,
+        themes: list[tuple[str, str]] | None = None,
     ) -> None:
         self.palette = palette
+        self._themes = list(themes or ())
         self.view = solid_view(palette.sidebar_background)
         self._on_category = on_category
         self._on_project = on_project
@@ -382,6 +438,7 @@ class Sidebar:
         self._projects_collapsed = False
         self._pending_drop = None
         self._last_announcement = ""
+        self._nav_signature = None
         self.search_field = self._build(logo_image, search_delegate)
 
     def _build(self, logo_image, search_delegate) -> NSSearchField:
@@ -431,9 +488,23 @@ class Sidebar:
         nav_scroll.setBorderType_(NSNoBorder)
         nav_scroll.setHasVerticalScroller_(True)
         nav_scroll.setAutohidesScrollers_(True)
-        pin_edges(nav_scroll, self.view, top=144, leading=8, trailing=8, bottom=82)
+        pin_edges(nav_scroll, self.view, top=144, leading=8, trailing=8, bottom=140)
         self._nav_scroll = nav_scroll
         self._rebuild_navigation()
+
+        # Bottom-left local workspace row (Settings / Appearance / folder).
+        profile = add(
+            self.view,
+            build_profile_row(
+                p,
+                logo_image,
+                menu_target=self._project_action_target,
+                themes=self._themes,
+            ),
+        )
+        pin_edges(profile, self.view, top=None, leading=14, trailing=14, bottom=12)
+        set_height(profile, 44)
+        self.profile_row = profile
 
         footer = add(
             self.view,
@@ -444,7 +515,7 @@ class Sidebar:
                 border_width=1.0,
             ),
         )
-        pin_edges(footer, self.view, top=None, leading=14, trailing=14, bottom=16)
+        pin_edges(footer, self.view, top=None, leading=14, trailing=14, bottom=66)
         set_height(footer, 52)
         shield = add(
             footer,
@@ -473,6 +544,26 @@ class Sidebar:
         pin_edges(f_sub, footer, top=28, leading=40, trailing=12, bottom=None)
         return search
 
+    def _row_icon(self, symbol: str, icon: str | None):
+        """The row's leading glyph: an emoji label, or a tintable SF Symbol.
+
+        An unknown or unavailable symbol falls back to the default folder, so a
+        stale stored icon can never leave a Project row blank.
+        """
+        if project_icon_kind(icon) == "emoji":
+            glyph = label(
+                project_icon_payload(icon),
+                NSFont.systemFontOfSize_(14),
+                self.palette.text_primary,
+            )
+            glyph.setAlignment_(1)  # centred
+            return glyph, False
+        name = project_icon_payload(icon) if icon else symbol
+        image = symbol_image(name, size=13) or symbol_image(
+            DEFAULT_PROJECT_SYMBOL, size=13
+        )
+        return icon_view(image, self.palette.text_muted), True
+
     def _make_row(
         self,
         parent,
@@ -484,6 +575,7 @@ class Sidebar:
         on_select,
         drag_kind: str | None = None,
         source_index: int = 0,
+        icon: str | None = None,
     ) -> SidebarRow:
         row = SidebarRow.alloc().initWithKey_(key)
         row.on_select = on_select
@@ -497,9 +589,14 @@ class Sidebar:
         row.layer().setCornerRadius_(8.0)
         parent.addSubview_(row)
 
-        icon = icon_view(symbol_image(symbol, size=13), self.palette.text_muted)
-        icon.setFrame_(NSMakeRect(12, 9, 17, 16))
-        row.addSubview_(icon)
+        icon_view_, is_symbol = self._row_icon(symbol, icon)
+        # An emoji needs a slightly taller box than a template symbol so its
+        # descender is never clipped; both stay optically on the same baseline.
+        icon_view_.setFrame_(
+            NSMakeRect(12, 9, 17, 16) if is_symbol else NSMakeRect(11, 7, 19, 21)
+        )
+        row.addSubview_(icon_view_)
+        row._icon_is_symbol = is_symbol
         name = label(
             title,
             NSFont.systemFontOfSize_(13.5),
@@ -515,7 +612,7 @@ class Sidebar:
         count.setAlignment_(2)
         count.setFrame_(NSMakeRect(174, 7, 30, 20))
         row.addSubview_(count)
-        row._icon = icon
+        row._icon = icon_view_
         row._name = name
         row._count = count
         if drag_kind == "project":
@@ -611,11 +708,12 @@ class Sidebar:
                     nav,
                     key=project.id,
                     title=project.name,
-                    symbol="folder",
+                    symbol=DEFAULT_PROJECT_SYMBOL,
                     y=y,
                     on_select=self._on_project,
                     drag_kind="project",
                     source_index=index,
+                    icon=project.icon,
                 )
                 y += 38
 
@@ -833,6 +931,13 @@ class Sidebar:
             )
             row.set_selected(selected, self.palette)
 
+    def _navigation_signature(self, projects: list[Project], collapsed: bool):
+        """What actually requires rebuilding the navigation tree."""
+        return (
+            tuple((project.id, project.name, project.icon) for project in projects),
+            bool(collapsed),
+        )
+
     def set_navigation(
         self,
         projects: list[Project],
@@ -842,11 +947,20 @@ class Sidebar:
         project_id: str | None,
         collapsed: bool,
     ) -> None:
+        signature = self._navigation_signature(projects, collapsed)
         self._projects = list(projects)
         self._counts = dict(counts)
         self._active_category = category
         self._active_project_id = project_id
         self._projects_collapsed = bool(collapsed)
+        # Selecting a different row used to tear down and rebuild every row,
+        # which is what made selection change abruptly. When only the selection
+        # (or a count) moved, update in place so the surface can transition.
+        if signature == self._nav_signature and self._rows:
+            self.set_counts(self._counts)
+            self._apply_selection()
+            return
+        self._nav_signature = signature
         self._rebuild_navigation()
 
     def set_active_category(self, category: str) -> None:

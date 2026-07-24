@@ -31,6 +31,7 @@ from .errors import (
     ProjectNotFoundError,
     StorageError,
 )
+from .icons import normalize_project_icon
 from .models import (
     DEFAULT_CATEGORY,
     Note,
@@ -160,6 +161,19 @@ class NoteStore:
             project.name = previous_name
             project.updated_at = previous_updated
             raise
+        return project
+
+    def set_project_icon(self, project_id: str, icon: str | None) -> Project:
+        """Set (or clear) a project's optional icon.
+
+        Presentation only: the project's UUID, folder, name, and notes are all
+        untouched. An unknown or malformed value clears the icon rather than
+        being stored, so a row can never end up with an undrawable glyph.
+        """
+        project = self.load_project(project_id)
+        project.icon = normalize_project_icon(icon)
+        project.updated_at = self._clock()
+        storage.write_project(project)
         return project
 
     # -- Create ---------------------------------------------------------------

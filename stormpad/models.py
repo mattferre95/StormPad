@@ -88,13 +88,19 @@ class TranscriptBlock:
 
 @dataclass
 class Project:
-    """Filesystem-backed grouping for related notes."""
+    """Filesystem-backed grouping for related notes.
+
+    ``icon`` is an optional presentation value (see :mod:`stormpad.icons`);
+    ``None`` means the default folder. It never affects the project's identity,
+    its folder, or which notes belong to it.
+    """
 
     id: str
     path: Path
     name: str
     created_at: datetime
     updated_at: datetime
+    icon: str | None = None
 
 
 def remove_transcript_chunk(chunks: list[TranscriptBlock], index: int) -> list[TranscriptBlock]:

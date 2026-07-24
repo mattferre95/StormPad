@@ -26,7 +26,9 @@ telemetry, external AI services, or web views.
 - Native three-column macOS window: sidebar, collapsible note list, editor.
 - Clear themed selected-note treatment that remains visible while writing.
 - Blank new-note flow with an unsaved `Untitled` placeholder and continuous
-  title-to-body keyboard transition.
+  title-to-body keyboard transition. A `+` in the Notes header, Cmd+N, File →
+  New Note, and New Note in Project all run the same creation command, so the
+  note lands in the selected Project (or Unfiled) with the title focused.
 - Native block editor for Text, Heading 1–3, To-do, Bulleted list, Numbered
   list, Quote, Divider, Link, Image, File, and optional Transcript.
 - One pointer-following `+` in a dedicated non-overlapping gutter. Block drag
@@ -41,6 +43,15 @@ telemetry, external AI services, or web views.
   swatches.
 - Local filesystem-backed Projects alongside categories, with All Notes and
   Unfiled filters, note counts, safe note movement, and project-aware creation.
+- Optional Project icons — a curated SF Symbol or a single emoji — chosen from a
+  compact native picker, persisted with the project and never affecting its
+  identity, folder, or notes.
+- A compact bottom-left local workspace row opening Settings, Appearance,
+  Reveal StormPad Folder, About, and Quit. StormPad has no accounts, so it shows
+  no sign-in, upgrade, subscription, or sync affordance.
+- Restrained native motion — collapsing the notes panel, changing the selected
+  surface, reloading the note list, and revealing hover controls — with every
+  duration coming from one policy that honours macOS Reduce Motion.
 - A compact top-right native Share button plus File and Note menu commands.
   Notes share as readable temporary TXT files through
   `NSSharingServicePicker`; projects share as sanitized local ZIP packages.

@@ -78,6 +78,7 @@ from ..blocks import (
     toggle_todo,
 )
 from ..models import Note, move_transcript_chunk, remove_transcript_chunk
+from ..motion import AnimationToken, Motion
 from ..uihelpers import (
     SaveStatus,
     block_gutter_canvas_y,
@@ -92,6 +93,8 @@ from ..uihelpers import (
 from .color_palette import build_color_palette_view
 from .controls import FlippedView, label, rounded_view
 from .layout import add, pin_edges, set_height, set_width
+from .motion import anim, can_animate, current_policy
+from .motion import run as run_animation  # `run` is a local name in this module
 from .palette import Palette, serif_font, symbol_image
 
 _ATTR_BLOCK = "StormPadBlockType"
@@ -395,6 +398,7 @@ class Editor(NSObject):
         self._context_block_index: int | None = None
         self._context_transcript_chunk: int | None = None
         self._block_controls_enabled = True
+        self._gutter_token = AnimationToken()
         self._block_menu = None
         self._color_menu = None
         self._color_recents: list[str] = []
@@ -1199,8 +1203,40 @@ class Editor(NSObject):
 
     def _set_gutter_hidden(self, hidden: bool) -> None:
         should_hide = hidden or not self._block_controls_enabled
-        self._plus.setHidden_(should_hide)
-        self._block_edit.setHidden_(should_hide)
+        controls = (self._plus, self._block_edit)
+        duration = (
+            current_policy().duration(Motion.FAST)
+            if can_animate(self.view)
+            else 0.0
+        )
+        if duration <= 0.0:
+            self._gutter_token.cancel()
+            for control in controls:
+                control.setHidden_(should_hide)
+                control.setAlphaValue_(1.0)
+            return
+        if not should_hide:
+            # Appear immediately and fade up: the control must be clickable the
+            # instant it is visible, with no reveal delay.
+            for control in controls:
+                if control.isHidden():
+                    control.setAlphaValue_(0.0)
+                control.setHidden_(False)
+        token = self._gutter_token.begin()
+
+        def body(animated: bool) -> None:
+            for control in controls:
+                anim(control, animated).setAlphaValue_(0.0 if should_hide else 1.0)
+
+        def done() -> None:
+            # Hidden only at the end, so a faded-out control never keeps
+            # swallowing clicks; a newer hover cancels this cleanly.
+            if self._gutter_token.is_current(token) and should_hide:
+                for control in controls:
+                    control.setHidden_(True)
+                    control.setAlphaValue_(1.0)
+
+        run_animation(duration, body, completion=done)
 
     @objc.python_method
     def set_block_controls_enabled(self, enabled: bool) -> None:

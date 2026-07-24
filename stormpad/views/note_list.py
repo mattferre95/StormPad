@@ -37,9 +37,11 @@ from Foundation import NSIndexSet, NSMakeRect, NSObject
 
 from ..dragdrop import NOTE_PASTEBOARD_TYPE, encode_drag_payload
 from ..models import Note, now_local
+from ..motion import AnimationToken, Motion
 from ..uihelpers import display_tag, format_relative, preview_text
 from .controls import FlippedView, flipped_view, icon_view, label, rounded_view, solid_view
 from .layout import add, pin_edges, set_height, set_width
+from .motion import anim, can_animate, current_policy, run
 from .palette import Palette, symbol_image
 
 # Compact All/Pinned filter segments.
@@ -124,6 +126,8 @@ class NoteList(NSObject):
         self._palette: Palette = palette
         self._on_select: Callable[[str | None], None] = on_select
         self._on_collapse: Callable[[], None] = on_collapse
+        self._on_new_note: Callable[[], None] | None = None
+        self._collapse_token = AnimationToken()
         self._notes: list[Note] = []
         self._selected_id: str | None = None
         self._suppress = False
@@ -169,6 +173,23 @@ class NoteList(NSObject):
         set_width(collapse, _CHEVRON_BUTTON)
         set_height(collapse, _CHEVRON_BUTTON)
         self._collapse_button = collapse
+
+        # New Note, mirroring the Projects section's create control.
+        new_note = NSButton.alloc().init()
+        new_note.setBordered_(False)
+        new_note.setImagePosition_(NSImageOnly)
+        new_note.setImage_(symbol_image("plus", size=12.0, weight="semibold"))
+        new_note.setImageScaling_(NSImageScaleProportionallyDown)
+        new_note.setContentTintColor_(p.text_muted)
+        new_note.setTarget_(self)
+        new_note.setAction_("createNote:")
+        new_note.setToolTip_("New Note")
+        new_note.setAccessibilityLabel_("New Note")
+        add(self.view, new_note)
+        pin_edges(new_note, self.view, top=51, leading=None, trailing=44, bottom=None)
+        set_width(new_note, _CHEVRON_BUTTON)
+        set_height(new_note, _CHEVRON_BUTTON)
+        self._new_note_button = new_note
 
         # Compact All / Pinned filter.
         seg = NSSegmentedControl.alloc().init()
@@ -242,7 +263,14 @@ class NoteList(NSObject):
     # -- public API ----------------------------------------------------------
 
     @objc.python_method
-    def set_notes(self, notes: list[Note], *, header: str, subtitle: str) -> None:
+    def set_notes(
+        self,
+        notes: list[Note],
+        *,
+        header: str,
+        subtitle: str,
+        transition: bool = False,
+    ) -> None:
         self._notes = notes
         self._header.setStringValue_(header)
         self._subtitle.setStringValue_(subtitle)
@@ -252,19 +280,89 @@ class NoteList(NSObject):
         self._table.reloadData()
         if self._selected_id is not None:
             self.select_note_id(self._selected_id, notify=False)
+        if transition:
+            self._fade_in_list()
 
     @objc.python_method
-    def set_collapsed(self, collapsed: bool) -> None:
-        self._collapsed = bool(collapsed)
-        for view in (
+    def _fade_in_list(self) -> None:
+        """A restrained opacity lift on the reloaded rows — never a slide.
+
+        The content is already correct before the fade starts, so an interrupted
+        transition simply restarts and still ends fully opaque.
+        """
+        if not can_animate(self._scroll) or self._collapsed:
+            return
+        duration = current_policy().duration(Motion.LIST)
+        if duration <= 0.0:
+            self._scroll.setAlphaValue_(1.0)
+            return
+        self._scroll.setAlphaValue_(0.45)
+        run(duration, lambda animated: anim(self._scroll, animated).setAlphaValue_(1.0))
+
+    @objc.python_method
+    def _content_views(self) -> tuple:
+        return (
             self._header,
             self._subtitle,
             self._collapse_button,
+            self._new_note_button,
             self._filter_control,
             self._scroll,
-        ):
+        )
+
+    @objc.python_method
+    def _apply_collapsed_visibility(self) -> None:
+        """Write the final visibility for the current state.
+
+        Recomputed from ``self._collapsed`` rather than from the direction that
+        started the animation, so an interrupted collapse still finishes in the
+        correct state and never leaves an invisible view accepting clicks.
+        """
+        for view in self._content_views():
             view.setHidden_(self._collapsed)
+            view.setAlphaValue_(1.0)
         self._collapsed_tab.setHidden_(not self._collapsed)
+        self._collapsed_tab.setAlphaValue_(1.0)
+
+    @objc.python_method
+    def set_collapsed(self, collapsed: bool, *, duration: float = 0.0) -> None:
+        collapsed = bool(collapsed)
+        unchanged = collapsed == self._collapsed
+        self._collapsed = collapsed
+        if duration <= 0.0 or not can_animate(self.view) or unchanged:
+            self._collapse_token.cancel()
+            self._apply_collapsed_visibility()
+            return
+
+        # Both surfaces are on screen for the crossfade; the one that is leaving
+        # is hidden again only once the transition completes.
+        for view in self._content_views():
+            view.setHidden_(False)
+            view.setAlphaValue_(1.0 if collapsed else 0.0)
+        self._collapsed_tab.setHidden_(False)
+        self._collapsed_tab.setAlphaValue_(0.0 if collapsed else 1.0)
+
+        def body(animated: bool) -> None:
+            for view in self._content_views():
+                anim(view, animated).setAlphaValue_(0.0 if collapsed else 1.0)
+            anim(self._collapsed_tab, animated).setAlphaValue_(1.0 if collapsed else 0.0)
+
+        token = self._collapse_token.begin()
+
+        def done() -> None:
+            if self._collapse_token.is_current(token):
+                self._apply_collapsed_visibility()
+
+        run(duration, body, completion=done)
+
+    @objc.python_method
+    def set_new_note_handler(self, handler: Callable[[], None] | None) -> None:
+        self._on_new_note = handler
+
+    @objc.IBAction
+    def createNote_(self, sender):  # noqa: N802
+        if self._on_new_note is not None:
+            self._on_new_note()
 
     @objc.IBAction
     def toggleCollapse_(self, sender):  # noqa: N802

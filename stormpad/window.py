@@ -68,6 +68,7 @@ from .errors import (
     StorageError,
 )
 from .exporter import export_note_txt, note_to_plain_text
+from .icons import normalize_project_icon
 from .models import (
     ALL_NOTES,
     CATEGORIES,
@@ -75,6 +76,7 @@ from .models import (
     UNFILED_PROJECT_ID,
     now_local,
 )
+from .motion import AnimationToken, Motion
 from .preferences import Preferences
 from .search import (
     filter_by_category,
@@ -86,7 +88,7 @@ from .search import (
 from .session import NoteStore
 from .sharing import ShareExportManager
 from .speech import SpeechController, SpeechUnavailableError
-from .theme import get_theme, menu_state
+from .theme import all_themes, get_theme, menu_state
 from .uihelpers import (
     AutosaveController,
     SaveStatus,
@@ -94,13 +96,20 @@ from .uihelpers import (
     copy_text,
     default_new_category,
     is_speakable,
+    notes_panel_geometry,
     word_count,
 )
 from .views import empty_state as es
 from .views.controls import flipped_view, gradient_view, solid_view
 from .views.editor import Editor
 from .views.empty_state import EmptyState
+from .views.icon_picker import (
+    CLEAR_IDENTIFIER,
+    CUSTOM_EMOJI_IDENTIFIER,
+    build_icon_picker_view,
+)
 from .views.layout import add, pin_edges, set_height, set_width
+from .views.motion import anim, can_animate, current_policy, run
 from .views.note_list import NoteList
 from .views.palette import Palette, symbol_image
 from .views.settings import SettingsController
@@ -163,6 +172,10 @@ class MainController(NSObject):
         self._last_share_path: Path | None = None
         self._action_buttons: list = []
         self._note_info_menu = None
+        self._icon_menu = None
+        self._icon_menu_project_id: str | None = None
+        self._panel_token = AnimationToken()
+        self._displayed_signature: tuple = ()
         self._settings = SettingsController.alloc().initWithOnTheme_onBlockControls_onReveal_(
             self._set_theme,
             self._set_block_controls,
@@ -232,6 +245,14 @@ class MainController(NSObject):
         if os.environ.get("STORMPAD_SHOW_PROJECT_CONTEXT"):
             NSTimer.scheduledTimerWithTimeInterval_repeats_block_(
                 0.25, False, lambda timer: self._show_project_context_dev_menu()
+            )
+        if os.environ.get("STORMPAD_SHOW_ICON_PICKER"):
+            NSTimer.scheduledTimerWithTimeInterval_repeats_block_(
+                0.25, False, lambda timer: self._show_icon_picker_dev_menu()
+            )
+        if os.environ.get("STORMPAD_SHOW_PROFILE_MENU"):
+            NSTimer.scheduledTimerWithTimeInterval_repeats_block_(
+                0.25, False, lambda timer: self._sidebar.profile_row.mouseDown_(None)
             )
         if (
             os.environ.get("STORMPAD_DRAG_PROJECT")
@@ -390,10 +411,14 @@ class MainController(NSObject):
             project_action_target=self,
             on_reorder_project=self._on_reorder_project,
             on_move_note=self._on_note_drop,
+            themes=[(theme_id, theme.name) for theme_id, theme in all_themes().items()],
         )
         self._note_list = NoteList.alloc().initWithPalette_onSelect_onCollapse_(
             self._palette, self._on_note_selected, self._toggle_notes_panel
         )
+        # Every creation path goes through newNote_, so the + button, Cmd+N,
+        # File → New Note, and New Note in Project cannot drift apart.
+        self._note_list.set_new_note_handler(lambda: self.newNote_(None))
         self._note_list.set_menu_provider(self._note_context_menu)
         self._note_list.set_filter_handler(self._on_pin_filter_changed)
         self._note_list.set_pinned_only(self._pinned_only)
@@ -542,6 +567,20 @@ class MainController(NSObject):
             (0.0, 0.0),
             row,
         )
+
+    @objc.python_method
+    def _show_icon_picker_dev_menu(self) -> None:
+        """Sanitized screenshot hook; inert in normal launches."""
+        project = self._project_for_dev_value(
+            os.environ.get("STORMPAD_SHOW_ICON_PICKER", "")
+        )
+        if project is None:
+            return
+        sender = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+            "Choose Icon", None, ""
+        )
+        sender.setRepresentedObject_(project.id)
+        self.chooseProjectIcon_(sender)
 
     @objc.python_method
     def _apply_sidebar_drag_dev_hook(self) -> None:
@@ -734,8 +773,19 @@ class MainController(NSObject):
             n = len(displayed)
             subtitle = f"{n} pinned note{'s' if n != 1 else ''}"
 
+        # A subtle list transition only when the visible set actually changed,
+        # and never while the user is typing in search.
+        signature = tuple(note.id for note in displayed)
+        transition = not self._query and signature != self._displayed_signature
+        self._displayed_signature = signature
+
         self._displayed = displayed
-        self._note_list.set_notes(displayed, header=header, subtitle=subtitle)
+        self._note_list.set_notes(
+            displayed,
+            header=header,
+            subtitle=subtitle,
+            transition=transition,
+        )
         self._sidebar.set_navigation(
             projects,
             counts,
@@ -912,6 +962,11 @@ class MainController(NSObject):
         self._prefs.last_note_id = note.id
         self._query = ""
         self._sidebar.clear_search()
+        # Creating while Pinned is active must still work and must not silently
+        # pin the note — so return to All, where the new note is visible.
+        if self._pinned_only:
+            self._pinned_only = False
+            self._note_list.set_pinned_only(False)
         self._apply_filter()
         self._editor.focus_title()
 
@@ -1061,6 +1116,77 @@ class MainController(NSObject):
             self._alert("Could not rename project", str(exc))
             return
         self._apply_filter()
+
+    @objc.IBAction
+    def chooseProjectIcon_(self, sender):  # noqa: N802
+        """Present the compact icon picker beside the project's row."""
+        project_id = self._represented_string(sender)
+        if project_id is None:
+            return
+        try:
+            project = self._store.load_project(project_id)
+        except ProjectNotFoundError as exc:
+            self._alert("Project not found", str(exc))
+            self._apply_filter()
+            return
+        row = self._sidebar._rows.get(project.id)
+        if row is None:
+            return
+        menu = NSMenu.alloc().initWithTitle_("Project Icon")
+        item = NSMenuItem.alloc().init()
+        item.setView_(
+            build_icon_picker_view(self._palette, current=project.icon, target=self)
+        )
+        menu.addItem_(item)
+        # Retained until dismissed, and the target project is captured now so a
+        # later click cannot apply an icon to whatever is selected by then.
+        self._icon_menu = menu
+        self._icon_menu_project_id = project.id
+        menu.popUpMenuPositioningItem_atLocation_inView_(None, (0.0, 0.0), row)
+
+    @objc.IBAction
+    def setProjectIcon_(self, sender):  # noqa: N802
+        project_id = self._icon_menu_project_id
+        identifier = sender.identifier() if hasattr(sender, "identifier") else None
+        self._icon_menu = None
+        self._icon_menu_project_id = None
+        if project_id is None or identifier is None:
+            return
+        raw = str(identifier)
+        if raw == CUSTOM_EMOJI_IDENTIFIER:
+            raw = self._prompt_project_emoji()
+            if raw is None:
+                return
+        icon = None if raw == CLEAR_IDENTIFIER else normalize_project_icon(raw)
+        self._set_project_icon(project_id, icon)
+
+    @objc.python_method
+    def _prompt_project_emoji(self) -> str | None:
+        alert = NSAlert.alloc().init()
+        alert.setMessageText_("Project Emoji")
+        alert.setInformativeText_(
+            "Enter one emoji. Press Control-Command-Space for the macOS emoji picker."
+        )
+        field = NSTextField.alloc().initWithFrame_(NSMakeRect(0, 0, 200, 24))
+        field.setAccessibilityLabel_("Project emoji")
+        alert.setAccessoryView_(field)
+        alert.addButtonWithTitle_("Use Emoji")
+        alert.addButtonWithTitle_("Cancel")
+        if alert.runModal() != 1000:
+            return None
+        return str(field.stringValue())
+
+    @objc.python_method
+    def _set_project_icon(self, project_id: str, icon: str | None) -> None:
+        try:
+            self._store.set_project_icon(project_id, icon)
+        except (ProjectNotFoundError, StorageError, OSError) as exc:
+            self._alert("Could not set project icon", str(exc))
+        self._apply_filter()
+
+    @objc.IBAction
+    def revealStormPadFolder_(self, sender):  # noqa: N802
+        self._reveal_notes_folder("root")
 
     @objc.IBAction
     def revealProject_(self, sender):  # noqa: N802
@@ -1247,16 +1373,66 @@ class MainController(NSObject):
         collapsed = self._notes_panel_collapsed()
         self._dev_notes_collapsed = None
         self._prefs.notes_list_collapsed = not collapsed
-        self._apply_notes_panel_state()
+        self._apply_notes_panel_state(animated=True)
 
     @objc.python_method
-    def _apply_notes_panel_state(self) -> None:
+    def _panel_geometry(self, collapsed: bool):
+        return notes_panel_geometry(
+            collapsed,
+            sidebar_width=_SIDEBAR_WIDTH,
+            expanded_width=_LIST_WIDTH,
+        )
+
+    @objc.python_method
+    def _write_panel_geometry(self, geometry) -> None:
+        """Write a panel end state verbatim (thickness clamps then divider)."""
+        self._list_item.setMinimumThickness_(geometry.minimum)
+        self._list_item.setMaximumThickness_(geometry.maximum)
+        self._split_vc.splitView().setPosition_ofDividerAtIndex_(
+            geometry.divider_position, 1
+        )
+
+    @objc.python_method
+    def _apply_notes_panel_state(self, *, animated: bool = False) -> None:
         collapsed = self._notes_panel_collapsed()
-        self._note_list.set_collapsed(collapsed)
-        width = 46.0 if collapsed else _LIST_WIDTH
-        self._list_item.setMinimumThickness_(width if collapsed else 260.0)
-        self._list_item.setMaximumThickness_(width if collapsed else 440.0)
-        self._split_vc.splitView().setPosition_ofDividerAtIndex_(_SIDEBAR_WIDTH + width, 1)
+        geometry = self._panel_geometry(collapsed)
+        split = self._split_vc.splitView()
+        duration = (
+            current_policy().duration(Motion.PANEL)
+            if animated and can_animate(split)
+            else 0.0
+        )
+        if duration <= 0.0:
+            # Initial build, theme rebuild, and Reduce Motion all land here: the
+            # panel simply is in its final state.
+            self._panel_token.cancel()
+            self._note_list.set_collapsed(collapsed)
+            self._write_panel_geometry(geometry)
+            return
+
+        # Relax the thickness clamps to bracket the journey, otherwise the
+        # split view's constraints pin the divider and it jumps at the end.
+        current = float(self._note_list.view.frame().size.width) or geometry.width
+        self._list_item.setMinimumThickness_(min(current, geometry.width))
+        self._list_item.setMaximumThickness_(max(current, geometry.width))
+        # The editor column is driven by the same divider, so it grows and
+        # shrinks with the notes panel rather than snapping afterwards.
+        self._note_list.set_collapsed(collapsed, duration=duration)
+        token = self._panel_token.begin()
+
+        def body(animated_: bool) -> None:
+            anim(split, animated_).setPosition_ofDividerAtIndex_(
+                geometry.divider_position, 1
+            )
+
+        def done() -> None:
+            if not self._panel_token.is_current(token):
+                return
+            # Recomputed, so an interrupted transition still restores the exact
+            # final widths and the column stays resizable afterwards.
+            self._write_panel_geometry(self._panel_geometry(self._notes_panel_collapsed()))
+
+        run(duration, body, completion=done)
 
     @objc.python_method
     def _notes_panel_collapsed(self) -> bool:

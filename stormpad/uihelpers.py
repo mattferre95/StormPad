@@ -169,6 +169,135 @@ def block_gutter_layout(
     )
 
 
+@dataclass(frozen=True)
+class NotesPanelGeometry:
+    """The exact end state of a notes-panel collapse or expand.
+
+    Animation only interpolates towards these numbers; the completion handler
+    writes them verbatim, so an interrupted transition still lands correctly.
+    """
+
+    collapsed: bool
+    width: float
+    minimum: float
+    maximum: float
+    divider_position: float
+
+
+def notes_panel_geometry(
+    collapsed: bool,
+    *,
+    sidebar_width: float,
+    expanded_width: float,
+    collapsed_width: float = 46.0,
+    minimum: float = 260.0,
+    maximum: float = 440.0,
+) -> NotesPanelGeometry:
+    """Resolve the notes panel's final widths for a collapse state.
+
+    Collapsed pins the column to its compact tab width; expanded restores the
+    original resizable range, so widths are preserved exactly across a
+    collapse/expand round trip.
+    """
+    if collapsed:
+        return NotesPanelGeometry(
+            collapsed=True,
+            width=collapsed_width,
+            minimum=collapsed_width,
+            maximum=collapsed_width,
+            divider_position=sidebar_width + collapsed_width,
+        )
+    return NotesPanelGeometry(
+        collapsed=False,
+        width=expanded_width,
+        minimum=minimum,
+        maximum=maximum,
+        divider_position=sidebar_width + expanded_width,
+    )
+
+
+PROFILE_FALLBACK_NAME = "StormPad User"
+PROFILE_SUBTITLE = "Local workspace"
+
+
+def profile_display_name(full_name: str | None) -> str:
+    """The name shown in the bottom-left row.
+
+    Uses the macOS display name when it is actually usable, otherwise a neutral
+    local fallback. StormPad has no accounts — this is a label, not an identity.
+    """
+    if not isinstance(full_name, str):
+        return PROFILE_FALLBACK_NAME
+    cleaned = " ".join(full_name.split())
+    return cleaned or PROFILE_FALLBACK_NAME
+
+
+@dataclass(frozen=True)
+class MenuEntry:
+    """One row of a declarative menu spec (a title of ``None`` is a separator)."""
+
+    title: str | None
+    action: str | None = None
+    represented: str | None = None
+    submenu: tuple[MenuEntry, ...] = ()
+
+    @property
+    def is_separator(self) -> bool:
+        return self.title is None
+
+
+def profile_menu_spec(themes: list[tuple[str, str]]) -> tuple[MenuEntry, ...]:
+    """The bottom-left local profile menu.
+
+    ``themes`` is ``(theme_id, display name)``. Appearance routes into the same
+    ``selectTheme:`` action the View menu uses, so the two can never drift.
+    There is deliberately nothing here implying an account: no sign-in, upgrade,
+    profile, subscription, or sync.
+    """
+    return (
+        MenuEntry("Settings…", "showSettings:"),
+        MenuEntry(None),
+        MenuEntry(
+            "Appearance",
+            submenu=tuple(
+                MenuEntry(name, "selectTheme:", theme_id) for theme_id, name in themes
+            ),
+        ),
+        MenuEntry(None),
+        MenuEntry("Reveal StormPad Folder", "revealStormPadFolder:"),
+        MenuEntry("About StormPad", "orderFrontStandardAboutPanel:"),
+        MenuEntry(None),
+        MenuEntry("Quit StormPad", "terminate:"),
+    )
+
+
+class TransientMenuState:
+    """Tracks whether a row's transient menu is open.
+
+    A row that pops up a menu must not also treat the click that dismissed the
+    menu as a selection, and must accept clicks again as soon as the menu
+    closes. Keeping that as one small state object means the cleanup cannot be
+    forgotten in one of the paths.
+    """
+
+    def __init__(self) -> None:
+        self._open = False
+
+    @property
+    def is_open(self) -> bool:
+        return self._open
+
+    @property
+    def accepts_clicks(self) -> bool:
+        return not self._open
+
+    def opened(self) -> None:
+        self._open = True
+
+    def closed(self) -> None:
+        self._open = False
+
+
 def block_gutter_canvas_y(
     *,
     scroll_origin_y: float,

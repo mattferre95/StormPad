@@ -4,15 +4,43 @@ Living continuation document for the native macOS StormPad project.
 
 ## Current status
 
-Phase 5.1.4 critical regression repair is complete locally on
-`feature/notion-editor`. Phase 6 has **not** started.
+Phase 5.1.5 (motion, Project icons, bottom-left profile menu, Notes `+`) is
+complete locally on `feature/notion-editor`. Phase 6 has **not** started.
 
 - **Project:** `/Users/mattferre/web/APP/Stormpad`
-- **Phase 5.1.3 starting point:** `e298315`
-  (`test: verify blank note autosave reload`)
+- **Phase 5.1.5 starting point:** `7c7f6b2`
+  (`feat: colour palette, block-edit control, project tags and inline rename`)
 - **Remote activity:** none; nothing was pushed or published
 - **Packaging/signing/notarization/release:** not started
 - **WisperFlow:** untouched
+
+## Phase 5.1.5 motion, Project icons, and the local profile menu
+
+Animation is decided in exactly one place. `stormpad/motion.py` is a pure policy
+(five transition kinds, one duration table, one reduced table, plus an
+interruption token); `stormpad/views/motion.py` is the only module that reads
+macOS Reduce Motion and the only one that drives `NSAnimationContext`. No view
+holds a timing literal, and a duration of `0` runs the identical code path
+synchronously — so Reduce Motion, the initial build, and `--smoke` all land in
+the final state immediately.
+
+- The notes panel animates its divider with the editor column following in the
+  same group. Thickness clamps are relaxed for the journey and rewritten
+  verbatim on completion from `notes_panel_geometry`, so interrupted and rapid
+  repeated toggles still end at the exact final widths and stay resizable.
+- Selecting a sidebar row no longer tears down and rebuilds every row. The
+  navigation tree rebuilds only when the projects, their icons, or the collapsed
+  state actually change; otherwise counts and the selected surface update in
+  place, which is what removed the abrupt selection flash.
+- Projects carry an optional `icon` (`symbol:<curated name>` or `emoji:<glyph>`)
+  in their existing metadata JSON. It is presentation only — identity, folder,
+  name, notes, order, and rename are all unaffected — and any unknown value
+  normalises back to the default folder.
+- The bottom-left row shows the macOS display name (falling back to
+  `StormPad User`) over `Local workspace`, and opens a native menu built from a
+  declarative spec whose Appearance items reuse the View menu's `selectTheme:`.
+- The Notes header `+` calls the same `newNote_` as Cmd+N, File → New Note, and
+  New Note in Project, so no creation path can drift.
 
 ## Phase 5.1.4 critical regression repair
 

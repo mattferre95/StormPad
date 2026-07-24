@@ -142,6 +142,9 @@ launches:
 - `STORMPAD_SHARE_DELAY`
 - `STORMPAD_SHOW_SHARE_PROJECT`
 - `STORMPAD_SHOW_PROJECT_CONTEXT`
+- `STORMPAD_SHOW_ICON_PICKER` — project name or id; opens its icon picker
+- `STORMPAD_SHOW_PROFILE_MENU` — opens the bottom-left local profile menu
+- `STORMPAD_REDUCE_MOTION` — forces the Reduce Motion path on or off
 - `STORMPAD_DRAG_PROJECT`
 - `STORMPAD_PROJECT_INSERTION_INDEX`
 - `STORMPAD_DRAG_NOTE_OVER`
