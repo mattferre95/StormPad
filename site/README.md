@@ -38,7 +38,6 @@ accessible installation guide.
 
 ## GitHub Pages
 
-`.github/workflows/pages.yml` contains a minimal Pages workflow. It uploads only
-the `site/` directory and deploys that artifact. It is not enabled merely by
-adding the file: repository Pages settings still need to be configured to use
-GitHub Actions, and the workflow needs to be pushed before it can run.
+`.github/workflows/pages.yml` contains the Pages workflow. It uploads only the
+`site/` directory and deploys that artifact to the public StormPad website when
+site files change on `main`.

@@ -1,0 +1,78 @@
+name: Bug report
+description: Report a reproducible problem in StormPad
+title: "[Bug] "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for reporting a problem. Use sanitized fixtures and remove personal notes, attachments, paths, and credentials.
+
+  - type: input
+    id: version
+    attributes:
+      label: StormPad version
+      placeholder: 0.1.0 Beta
+    validations:
+      required: true
+
+  - type: input
+    id: macos
+    attributes:
+      label: macOS version
+      placeholder: macOS 15.5
+    validations:
+      required: true
+
+  - type: dropdown
+    id: architecture
+    attributes:
+      label: Mac architecture
+      options:
+        - Apple Silicon
+        - Intel
+        - Unknown
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: What happened?
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction steps
+      description: List the smallest reliable sequence that reproduces the problem.
+      placeholder: |
+        1. Open StormPad
+        2. ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected result
+      description: What did you expect to happen?
+    validations:
+      required: true
+
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Sanitized screenshots or logs
+      description: Remove personal notes, attachments, local paths, and credentials before attaching anything.
+
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: Privacy confirmation
+      options:
+        - label: I confirmed that this report contains no personal notes, attachments, secrets, or credentials.
+          required: true

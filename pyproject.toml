@@ -9,7 +9,7 @@ description = "A local-first notepad for capturing ideas as they happen."
 readme = "README.md"
 requires-python = ">=3.12"
 license = { file = "LICENSE" }
-authors = [{ name = "StormPad contributors" }]
+authors = [{ name = "Matt Ferré" }]
 keywords = ["macos", "notes", "markdown", "local-first", "pyobjc", "appkit"]
 classifiers = [
     "Environment :: MacOS X :: Cocoa",
