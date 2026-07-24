@@ -1,0 +1,264 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#05070b">
+    <meta
+      name="description"
+      content="StormPad is a local-first notepad for capturing ideas as they happen."
+    >
+    <title>StormPad | A local-first notepad for Mac</title>
+    <link rel="icon" href="assets/stormpad-icon.png">
+    <link rel="stylesheet" href="styles.css">
+    <script src="script.js" defer></script>
+  </head>
+  <body>
+    <a class="skip-link" href="#main-content">Skip to content</a>
+
+    <header class="site-header" data-header>
+      <nav class="nav shell" aria-label="Primary navigation">
+        <a class="brand" href="#top" aria-label="StormPad home">
+          <img src="assets/stormpad-icon.png" alt="" width="32" height="32">
+          <span>StormPad</span>
+        </a>
+
+        <div class="nav-links">
+          <a href="#features">Features</a>
+          <a href="#privacy">Privacy</a>
+          <a href="#install">Install</a>
+          <a href="https://github.com/mattferre95/StormPad">GitHub</a>
+          <button class="button button-small js-download" type="button">Download</button>
+        </div>
+      </nav>
+    </header>
+
+    <main id="main-content">
+      <section class="hero shell" id="top" aria-labelledby="hero-title">
+        <div class="hero-copy">
+          <div class="eyebrow">
+            <span class="eyebrow-mark" aria-hidden="true"></span>
+            Made for Mac
+          </div>
+          <h1 id="hero-title">StormPad</h1>
+          <p class="hero-tagline">A local-first notepad for capturing ideas as they happen.</p>
+          <p class="hero-support">Capture ideas, organize projects, and keep every note on your Mac.</p>
+          <div class="hero-actions">
+            <button class="button button-primary js-download" type="button">
+              <span>Download for Mac</span>
+              <span aria-hidden="true">↓</span>
+            </button>
+            <a class="button button-secondary" href="https://github.com/mattferre95/StormPad">
+              View on GitHub
+            </a>
+          </div>
+          <p class="metadata">Public Beta <span>·</span> Apple Silicon <span>·</span> macOS 13+</p>
+          <p class="download-status" role="status" aria-live="polite" tabindex="-1" data-download-status hidden>
+            The beta download is not available yet. Follow the project on GitHub for release updates.
+          </p>
+        </div>
+
+        <figure class="product-shot" aria-label="StormPad application interface">
+          <div class="window-bar" aria-hidden="true">
+            <span></span><span></span><span></span>
+            <p>StormPad</p>
+          </div>
+          <img
+            src="assets/stormpad-app.png"
+            alt="StormPad on macOS showing its sidebar, note list, and block-based editor"
+            width="2736"
+            height="1440"
+          >
+        </figure>
+      </section>
+
+      <section class="section shell" id="features" aria-labelledby="features-title">
+        <div class="section-heading">
+          <p class="kicker">Built for thinking</p>
+          <h2 id="features-title">Everything you need.<br>Nothing you do not.</h2>
+        </div>
+
+        <div class="feature-list">
+          <article class="feature">
+            <div class="feature-number" aria-hidden="true">01</div>
+            <div>
+              <h3>Native and fast</h3>
+              <p>Built with native macOS technologies for immediate idea capture.</p>
+            </div>
+          </article>
+          <article class="feature">
+            <div class="feature-number" aria-hidden="true">02</div>
+            <div>
+              <h3>Local by default</h3>
+              <p>Notes are stored as Markdown inside <code>~/Documents/StormPad/</code>.</p>
+            </div>
+          </article>
+          <article class="feature">
+            <div class="feature-number" aria-hidden="true">03</div>
+            <div>
+              <h3>Organized naturally</h3>
+              <p>Projects, pinned notes, global search, to-dos, attachments, and block-based editing.</p>
+            </div>
+          </article>
+          <article class="feature">
+            <div class="feature-number" aria-hidden="true">04</div>
+            <div>
+              <h3>Private by design</h3>
+              <p>No account, cloud sync, telemetry, advertising, or data sale.</p>
+            </div>
+          </article>
+        </div>
+      </section>
+
+      <section class="section install-section" id="install" aria-labelledby="install-title">
+        <div class="shell">
+          <div class="section-heading centered">
+            <p class="kicker">Simple setup</p>
+            <h2 id="install-title">Install StormPad in seconds</h2>
+            <p>From download to your first note in three familiar Mac steps.</p>
+          </div>
+
+          <ol class="install-steps">
+            <li>
+              <span class="step-number">1</span>
+              <div class="step-visual download-file" aria-hidden="true">
+                <img src="assets/stormpad-icon.png" alt="" width="76" height="76">
+                <span>.dmg</span>
+              </div>
+              <h3>Download the DMG</h3>
+              <p>Get the latest StormPad beta for Apple Silicon.</p>
+            </li>
+            <li>
+              <span class="step-number">2</span>
+              <div class="step-visual transfer" aria-hidden="true">
+                <img src="assets/stormpad-icon.png" alt="" width="64" height="64">
+                <span class="transfer-arrow">→</span>
+                <span class="applications-folder"><b>A</b></span>
+              </div>
+              <h3>Drag StormPad into Applications</h3>
+              <p>Move the app into your Applications folder.</p>
+            </li>
+            <li>
+              <span class="step-number">3</span>
+              <div class="step-visual open-app" aria-hidden="true">
+                <span class="launch-ring"></span>
+                <img src="assets/stormpad-icon.png" alt="" width="76" height="76">
+              </div>
+              <h3>Open StormPad</h3>
+              <p>Launch it from Applications and start writing.</p>
+            </li>
+          </ol>
+
+          <aside class="beta-notice" aria-labelledby="beta-title">
+            <div class="notice-icon" aria-hidden="true">!</div>
+            <div>
+              <h3 id="beta-title">Independent unsigned beta</h3>
+              <p>
+                StormPad is currently an independent unsigned beta. macOS may block the first
+                launch because the app has not yet been notarized by Apple.
+              </p>
+              <details>
+                <summary>macOS blocked the app?</summary>
+                <ol>
+                  <li>Try opening StormPad once.</li>
+                  <li>Open System Settings.</li>
+                  <li>Go to Privacy &amp; Security.</li>
+                  <li>Scroll to Security and click Open Anyway.</li>
+                  <li>Confirm by clicking Open.</li>
+                </ol>
+                <p class="security-note">
+                  Only follow these steps when StormPad was downloaded from the official StormPad
+                  website or GitHub repository.
+                </p>
+              </details>
+            </div>
+          </aside>
+        </div>
+      </section>
+
+      <section class="section privacy-section shell" id="privacy" aria-labelledby="privacy-title">
+        <div class="privacy-copy">
+          <p class="kicker">Local-first, always</p>
+          <h2 id="privacy-title">Your notes are yours.</h2>
+          <p>
+            StormPad keeps your writing on your Mac in files you can read, move, and back up
+            yourself.
+          </p>
+        </div>
+        <ul class="privacy-points">
+          <li><span aria-hidden="true">✓</span> Stored locally as Markdown</li>
+          <li><span aria-hidden="true">✓</span> No account</li>
+          <li><span aria-hidden="true">✓</span> No cloud</li>
+          <li><span aria-hidden="true">✓</span> No telemetry</li>
+          <li><span aria-hidden="true">✓</span> No advertising</li>
+          <li><span aria-hidden="true">✓</span> No data sale</li>
+        </ul>
+      </section>
+
+      <section class="final-cta shell" aria-labelledby="cta-title">
+        <img src="assets/stormpad-icon.png" alt="" width="88" height="88">
+        <h2 id="cta-title">Ideas move fast.<br>StormPad keeps up.</h2>
+        <button class="button button-primary js-download" type="button">Download for Mac</button>
+        <p>Public Beta for Apple Silicon</p>
+      </section>
+    </main>
+
+    <footer class="site-footer">
+      <div class="shell footer-inner">
+        <div class="footer-brand">
+          <img src="assets/stormpad-icon.png" alt="" width="28" height="28">
+          <span>StormPad</span>
+        </div>
+        <p>Built by Matt Ferré</p>
+        <nav aria-label="Footer navigation">
+          <a href="https://github.com/mattferre95/StormPad">GitHub</a>
+          <a href="#privacy">Privacy</a>
+        </nav>
+        <p class="version">Version 0.1.0 Beta</p>
+      </div>
+    </footer>
+
+    <div class="modal" data-modal hidden>
+      <div class="modal-backdrop" data-modal-close></div>
+      <section
+        class="modal-panel"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="modal-title"
+        aria-describedby="modal-description"
+        tabindex="-1"
+        data-modal-panel
+      >
+        <button class="modal-close" type="button" aria-label="Close installation guide" data-modal-close>
+          <span aria-hidden="true">×</span>
+        </button>
+        <div class="modal-icon">
+          <img src="assets/stormpad-icon.png" alt="" width="72" height="72">
+        </div>
+        <p class="kicker">Your download has started</p>
+        <h2 id="modal-title">Install StormPad</h2>
+        <p id="modal-description">Three quick steps, then you are ready to capture your next idea.</p>
+        <ol class="modal-steps">
+          <li><span>1</span><div><b>Open the DMG</b><p>Find it in your Downloads folder.</p></div></li>
+          <li><span>2</span><div><b>Move StormPad</b><p>Drag the app into Applications.</p></div></li>
+          <li><span>3</span><div><b>Open StormPad</b><p>Launch it from your Applications folder.</p></div></li>
+        </ol>
+        <details class="modal-security">
+          <summary>macOS blocked the app?</summary>
+          <ol>
+            <li>Try opening StormPad once.</li>
+            <li>Open System Settings.</li>
+            <li>Go to Privacy &amp; Security.</li>
+            <li>Scroll to Security and click Open Anyway.</li>
+            <li>Confirm by clicking Open.</li>
+          </ol>
+          <p>
+            Only follow these steps when StormPad was downloaded from the official StormPad
+            website or GitHub repository.
+          </p>
+        </details>
+        <button class="button button-secondary modal-done" type="button" data-modal-close>Done</button>
+      </section>
+    </div>
+  </body>
+</html>
