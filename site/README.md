@@ -28,7 +28,7 @@ Do not use captures containing personal notes.
 ## Download configuration
 
 The clearly named `DOWNLOAD_URL` and `DOWNLOAD_AVAILABLE` constants are at the
-top of `site/script.js`. They point to the published `v0.1.0-beta.1` GitHub
+top of `site/script.js`. They point to the published `v0.1.1-beta.1` GitHub
 prerelease. A click starts the DMG download and opens the accessible
 installation guide.
 

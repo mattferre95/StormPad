@@ -1,5 +1,5 @@
 const DOWNLOAD_URL =
-  "https://github.com/mattferre95/StormPad/releases/download/v0.1.0-beta.1/StormPad-0.1.0.dmg";
+  "https://github.com/mattferre95/StormPad/releases/download/v0.1.1-beta.1/StormPad-0.1.1.dmg";
 
 const DOWNLOAD_AVAILABLE = true;
 
