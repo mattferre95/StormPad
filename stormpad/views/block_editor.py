@@ -80,6 +80,7 @@ from ..blocks import (
     insert_block_after_selection,
     merge_empty_block_backward,
     next_block_after_return,
+    numbered_display_number,
     reorder_blocks,
     split_block_after_return,
     toggle_todo,
@@ -851,13 +852,14 @@ class Editor(NSObject):
                 self, "restoreDocument:", {"text": snapshot, "selection": selection}
             )
         result = NSMutableAttributedString.alloc().init()
-        for index, block in enumerate(blocks or [Block()]):
+        document = blocks or [Block()]
+        for index, block in enumerate(document):
             if index:
                 previous_attrs = self._block_base_attributes(block)
                 result.appendAttributedString_(
                     NSAttributedString.alloc().initWithString_attributes_("\n", previous_attrs)
                 )
-            result.appendAttributedString_(self._attributed_block(block, index))
+            result.appendAttributedString_(self._attributed_block(block, index, document))
         was_loading = self._loading
         self._loading = True
         try:
@@ -886,8 +888,24 @@ class Editor(NSObject):
             self._loading = False
         self._emit_body_change()
 
+    def _display_number(
+        self, block: Block, block_index: int, document: list[Block] | None
+    ) -> int:
+        """Counter shown before a numbered block, or 1 without a document."""
+        if document is None:
+            return 1
+        try:
+            if document[block_index] is not block:
+                return 1
+            return numbered_display_number(document, block_index)
+        except (IndexError, ValueError):
+            return 1
+
     def _attributed_block(
-        self, block: Block, block_index: int = 0
+        self,
+        block: Block,
+        block_index: int = 0,
+        document: list[Block] | None = None,
     ) -> NSMutableAttributedString:
         attrs = self._block_base_attributes(block)
         result = NSMutableAttributedString.alloc().init()
@@ -899,7 +917,8 @@ class Editor(NSObject):
         elif block.kind == BlockType.BULLET:
             prefix, decoration = "• ", "prefix"
         elif block.kind == BlockType.NUMBERED:
-            prefix, decoration = "1. ", "prefix"
+            # Markdown keeps every item as "1."; only the display counts up.
+            prefix, decoration = f"{self._display_number(block, block_index, document)}. ", "prefix"
         elif block.kind == BlockType.QUOTE:
             prefix, decoration = "❝ ", "prefix"
         elif block.kind == BlockType.FILE:

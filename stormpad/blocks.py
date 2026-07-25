@@ -180,6 +180,30 @@ class Block:
         )
 
 
+def numbered_display_number(blocks: list[Block], index: int) -> int:
+    """Display number for the numbered block at ``index``, counting from 1.
+
+    Markdown storage writes every item as "1." (valid, and stable under edits),
+    so the counter is a display concern only.  A run is the stretch of numbered
+    blocks sharing an indent level; deeper-indented blocks belong to a nested
+    list and do not interrupt their parent's count, while anything else at the
+    same level or shallower starts a new run.
+    """
+    if not 0 <= index < len(blocks):
+        raise IndexError(f"no block at index {index}")
+    block = blocks[index]
+    if block.kind != BlockType.NUMBERED:
+        raise ValueError("only numbered blocks carry a display number")
+    number = 1
+    for previous in reversed(blocks[:index]):
+        if previous.indent > block.indent:
+            continue
+        if previous.kind != BlockType.NUMBERED or previous.indent != block.indent:
+            break
+        number += 1
+    return number
+
+
 def insert_block(
     blocks: list[Block], index: int, block: Block | None = None, *, above: bool = False
 ) -> tuple[list[Block], int]:
