@@ -36,6 +36,7 @@ _KEY_PROJECTS_COLLAPSED = "projects_collapsed"
 _KEY_PROJECT_ORDER = "project_order"
 _KEY_PINNED_NOTES = "pinned_note_ids"
 _KEY_RECENT_COLORS = "recent_colors"
+_KEY_STARTER_TEMPLATE = "starter_template_installed_v1"
 RECENT_COLOR_LIMIT = 4
 
 
@@ -237,6 +238,23 @@ class Preferences:
     def recent_colors(self, values: list[str]) -> None:
         unique = list(dict.fromkeys(v for v in values if v and ":" in v))
         self._backend.set(_KEY_RECENT_COLORS, json.dumps(unique[:RECENT_COLOR_LIMIT]))
+
+    # -- Starter template ----------------------------------------------------
+
+    @property
+    def starter_template_installed(self) -> bool:
+        """Whether this workspace has already received the bundled starter note.
+
+        A durable one-way marker. It stays set once the note has been installed
+        (or once an established workspace has been recognized as predating the
+        feature), so the note is never recreated after the user renames, moves,
+        or deletes it.
+        """
+        return self._backend.get(_KEY_STARTER_TEMPLATE) == "true"
+
+    @starter_template_installed.setter
+    def starter_template_installed(self, value: bool) -> None:
+        self._backend.set(_KEY_STARTER_TEMPLATE, "true" if value else "false")
 
     def record_recent_color(self, entry: str) -> list[str]:
         """Push ``"mode:token"`` to the front of the recents and persist."""

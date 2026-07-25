@@ -41,6 +41,11 @@ stormpad = "stormpad.app:main"
 [tool.setuptools.packages.find]
 include = ["stormpad*"]
 
+# The bundled starter template ships with the package so a new workspace can be
+# initialized from a source checkout, an editable install, or the packaged app.
+[tool.setuptools.package-data]
+"stormpad.resources" = ["*.md"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"

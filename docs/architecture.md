@@ -301,9 +301,11 @@ that same window after a real close cycle.
 | `exporter.py` | Semantic note → readable atomic UTF-8 TXT export. |
 | `paths.py` | Canonical/injectable local paths; no import-time creation. |
 | `search.py` | Unicode title/body/transcript search and category/project filtering. |
-| `preferences.py` | Theme, note/project selection, project order/collapse, note-list collapse, and Add Block preference. |
+| `preferences.py` | Theme, note/project selection, project order/collapse, note-list collapse, Add Block preference, and the starter-template marker. |
 | `theme.py` | Complete Storm Blue, Light, and Deep Dark semantic tokens. |
 | `uihelpers.py` | Pure previews, selection rules, autosave, and block UI-state helpers. |
+| `welcome.py` | One-time import of the bundled starter note into a genuinely new workspace. |
+| `resources/` | Read-only bundled assets, currently the `welcome_note.md` starter template. |
 
 ### AppKit
 

@@ -6,10 +6,17 @@ import plistlib
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 APP_PATH = ROOT / "dist" / "StormPad.app"
+
+WELCOME_TITLE = "Welcome to StormPad"
+WELCOME_OPENING = (
+    "This note shows everything you can create. Edit it, experiment with it, "
+    "or delete it whenever you are ready."
+)
 
 EXPECTED_PLIST = {
     "CFBundleName": "StormPad",
@@ -41,6 +48,55 @@ def run(command: list[str]) -> subprocess.CompletedProcess[str]:
     return subprocess.run(command, capture_output=True, text=True, check=False)
 
 
+def verify_welcome_template() -> Path:
+    """Confirm the bundled starter note ships, reads, and imports cleanly.
+
+    The last check is the meaningful one: the packaged Markdown is driven
+    through the real installation path into a throwaway workspace, so a
+    template that no longer parses can never reach a user.
+    """
+    matches = sorted(APP_PATH.rglob("stormpad/resources/welcome_note.md"))
+    if not matches:
+        fail("bundled welcome template is missing from the application bundle")
+    template_path = matches[0]
+
+    try:
+        text = template_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        fail(f"bundled welcome template is not readable: {exc}")
+    if not text.strip():
+        fail(f"bundled welcome template is empty: {template_path}")
+
+    sys.path.insert(0, str(ROOT))
+    from stormpad import storage, welcome
+    from stormpad.preferences import InMemoryBackend, Preferences
+    from stormpad.session import NoteStore
+
+    parsed = storage.parse(text, path=template_path)
+    if parsed.title != WELCOME_TITLE:
+        fail(f"bundled welcome template title: expected {WELCOME_TITLE!r}, found {parsed.title!r}")
+    opening = parsed.body.split("\n", 1)[0].strip()
+    if opening != WELCOME_OPENING:
+        fail(f"bundled welcome template opening copy: found {opening!r}")
+
+    original = welcome.template_text
+    welcome.template_text = lambda: text  # exercise the packaged bytes
+    try:
+        with tempfile.TemporaryDirectory(prefix="stormpad-verify-") as workspace:
+            store = NoteStore(Path(workspace) / "StormPad" / "Notes")
+            preferences = Preferences(InMemoryBackend())
+            installed = welcome.install_starter_template(store, preferences)
+            if installed is None:
+                fail("bundled welcome template did not install into a new workspace")
+            notes = store.list_notes()
+            if len(notes) != 1 or notes[0].title != WELCOME_TITLE:
+                fail(f"unexpected workspace after import: {[note.title for note in notes]}")
+    finally:
+        welcome.template_text = original
+
+    return template_path
+
+
 def main() -> int:
     if sys.platform != "darwin":
         fail("verification requires macOS")
@@ -64,6 +120,8 @@ def main() -> int:
     icon_path = APP_PATH / "Contents" / "Resources" / "StormPad.icns"
     if not icon_path.is_file() or icon_path.stat().st_size == 0:
         fail(f"bundle icon is missing or empty: {icon_path}")
+
+    template_path = verify_welcome_template()
 
     executable_name = info.get("CFBundleExecutable")
     if not isinstance(executable_name, str) or not executable_name:
@@ -130,6 +188,8 @@ def main() -> int:
     print("Architecture: arm64")
     print("Info.plist: approved metadata verified")
     print(f"Icon: {icon_path}")
+    print(f"Welcome template: {template_path.relative_to(APP_PATH)}")
+    print("Welcome template: title, opening copy, and new-workspace import verified")
     print(f"Distribution signing: unsigned ({signature_state})")
     print("User-note content: not present in bundle")
     return 0

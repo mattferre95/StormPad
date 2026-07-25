@@ -31,6 +31,10 @@ StormPad is a native AppKit and PyObjC application built for immediate capture
 without an account or service dependency.
 
 - Notes stay on your Mac as readable Markdown.
+- New workspaces begin with one editable Welcome to StormPad note that
+  demonstrates headings, formatting, lists, links, organization, sharing, and
+  local storage. It can be edited, moved, renamed, or deleted like any other
+  note.
 - Projects, pinned notes, global search, and categories keep ideas organized.
 - A block-based editor supports prose, to-dos, lists, headings, quotes, links,
   images, and files.

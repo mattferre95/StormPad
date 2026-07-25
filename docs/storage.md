@@ -112,6 +112,32 @@ Allowed semantic color names are `default`, `gray`, `blue`, `cyan`, `green`,
 `yellow`, `orange`, `red`, and `purple`. Arbitrary style/script content is
 never generated or executed.
 
+## Bundled starter note
+
+StormPad ships one read-only starter template inside the application bundle at
+`stormpad/resources/welcome_note.md`. It is an ordinary note document without
+`ID` or timestamps, so identity belongs to the copy that lands in the user's
+workspace rather than to the shipped resource.
+
+The first time StormPad initializes a genuinely new workspace it parses that
+template with the production parser and writes one note, `Welcome to StormPad`,
+into `Notes/` through the normal storage layer. From then on the note is
+indistinguishable from any other: editable, renameable, movable, pinnable, and
+permanently deletable. The bundle is never read again.
+
+A workspace counts as new only while `Notes/` does not exist yet, so the check
+runs before the directory is created. An established workspace is recognized
+even when the user has since deleted every note, and never receives the starter
+note retroactively.
+
+Installation is recorded once in the durable
+`starter_template_installed_v1` preference, written only after the note is
+successfully on disk. The marker is never keyed on a title, so renaming,
+moving, or deleting the note does not bring it back, and a relaunch, update, or
+reinstall cannot duplicate it. A failed write rolls the empty notes directory
+back and leaves the marker unset, so the next launch retries instead of
+silently skipping the note.
+
 ## IDs and migration
 
 - New notes receive one UUID at creation.

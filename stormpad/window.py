@@ -128,6 +128,7 @@ from .views.note_list import NoteList
 from .views.palette import Palette, symbol_image
 from .views.settings import SettingsController
 from .views.sidebar import Sidebar, toggled_project_expansion
+from .welcome import install_starter_template
 
 _AUTOSAVE_DELAY = 0.4
 _DEFAULT_SIZE = (1100.0, 720.0)
@@ -765,6 +766,15 @@ class MainController(NSObject):
 
     @objc.python_method
     def _ensure_ready(self) -> None:
+        # The starter note asks whether the workspace is new *before* the notes
+        # directory is created, so an established workspace whose notes were all
+        # deleted is never mistaken for a first launch.
+        try:
+            install_starter_template(self._store, self._prefs)
+        except (OSError, StorageError):
+            # A first-launch copy that fails is retried next launch rather than
+            # recorded as done. Either way the app opens normally.
+            pass
         try:
             self._store.ensure_dir()
         except NotesDirectoryError as exc:
