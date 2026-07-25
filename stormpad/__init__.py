@@ -9,7 +9,7 @@ unit-tested headlessly. Only the ``app``, ``window`` and ``views`` modules
 touch AppKit.
 """
 
-__version__ = "0.1.1"
+__version__ = "0.1.2"
 __app_name__ = "StormPad"
 __tagline__ = "A local-first notepad for capturing ideas as they happen."
 
