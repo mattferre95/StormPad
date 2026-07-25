@@ -39,8 +39,8 @@ PY2APP_OPTIONS = {
         "CFBundleDisplayName": "StormPad",
         "CFBundleIdentifier": "com.mattferre.stormpad",
         "CFBundlePackageType": "APPL",
-        "CFBundleShortVersionString": "0.1.0",
-        "CFBundleVersion": "1",
+        "CFBundleShortVersionString": "0.1.1",
+        "CFBundleVersion": "2",
         "CFBundleIconFile": "StormPad.icns",
         "CFBundleDevelopmentRegion": "en",
         "CFBundleInfoDictionaryVersion": "6.0",
@@ -58,7 +58,7 @@ PY2APP_OPTIONS = {
 
 setup(
     name="StormPad",
-    version="0.1.0",
+    version="0.1.1",
     description="A local-first notepad for capturing ideas as they happen.",
     app=APP,
     install_requires=[],

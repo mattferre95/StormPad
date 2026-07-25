@@ -36,7 +36,7 @@ def make_note(**overrides) -> Note:
 
 
 def test_package_metadata():
-    assert stormpad.__version__ == "0.1.0"
+    assert stormpad.__version__ == "0.1.1"
     assert stormpad.__app_name__ == "StormPad"
 
 

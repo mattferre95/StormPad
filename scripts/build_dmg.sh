@@ -4,7 +4,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 APP_PATH="$ROOT/dist/StormPad.app"
-DMG_PATH="$ROOT/dist/StormPad-0.1.0.dmg"
+DMG_PATH="$ROOT/dist/StormPad-0.1.1.dmg"
 TEMP_ROOT=""
 
 fail() {
