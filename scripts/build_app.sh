@@ -78,12 +78,30 @@ MACOSX_DEPLOYMENT_TARGET=13.0 "$PYTHON_BIN" setup_app.py py2app
 
 [ -d "$APP_PATH" ] || fail "py2app did not create $APP_PATH"
 
+# Every bundle modification must happen BEFORE the bundle is sealed. py2app ad
+# hoc signs the app at the end of its own build, so pruning these caches here
+# removes files that are already listed in _CodeSignature/CodeResources. That
+# broke the seal and made Gatekeeper report "StormPad.app is damaged and can't
+# be opened", which is why the re-sign below is not optional.
 find "$APP_PATH/Contents/Resources" \
   -type d \
   \( -name __pycache__ -o -name .pytest_cache -o -name .ruff_cache -o -name .mypy_cache \) \
   -prune \
   -exec rm -rf -- {} +
 
-echo "Built unsigned review application:"
+# The main executable must be executable before it is signed.
+chmod +x "$APP_PATH/Contents/MacOS/StormPad" || fail "could not set the executable bit"
+
+# Re-seal the finished bundle. --deep re-signs nested binaries inside-out
+# before the outer bundle, so no nested Mach-O is left sealed against stale
+# contents. Nothing may modify the bundle after this point.
+codesign --force --deep --sign - "$APP_PATH" \
+  || fail "ad hoc signing failed"
+
+codesign --verify --deep --strict --verbose=2 "$APP_PATH" \
+  || fail "the signed bundle does not verify"
+
+echo "Built ad hoc signed review application:"
 echo "$APP_PATH"
-echo "Unsigned: no Developer ID signing or notarization was performed."
+echo "Ad hoc signed for local use on this Mac only."
+echo "Not Developer ID signed and not notarized: unsuitable for public distribution."
