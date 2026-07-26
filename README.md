@@ -7,7 +7,7 @@
 **A local-first macOS notepad for capturing ideas as they happen.**
 
 [Website](https://mattferre95.github.io/StormPad/) ·
-[Download beta](https://github.com/mattferre95/StormPad/releases/download/v0.1.2-beta.1/StormPad-0.1.2.dmg) ·
+[Download beta](https://github.com/mattferre95/StormPad/releases/download/v0.1.2-beta.2/StormPad-0.1.2.dmg) ·
 [Releases](https://github.com/mattferre95/StormPad/releases)
 
 **Public Beta · Apple Silicon · macOS 13+ · [MIT License](LICENSE)**
@@ -44,7 +44,7 @@ without an account or service dependency.
 
 ## Download and installation
 
-[Download StormPad 0.1.2 Public Beta](https://github.com/mattferre95/StormPad/releases/download/v0.1.2-beta.1/StormPad-0.1.2.dmg)
+[Download StormPad 0.1.2 Public Beta](https://github.com/mattferre95/StormPad/releases/download/v0.1.2-beta.2/StormPad-0.1.2.dmg)
 
 1. Download `StormPad-0.1.2.dmg`.
 2. Open the DMG.
