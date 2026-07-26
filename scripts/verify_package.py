@@ -170,8 +170,10 @@ def main() -> int:
     if "TeamIdentifier=" in signature_detail and "TeamIdentifier=not set" not in signature_detail:
         fail("the app has a signing team identifier")
 
+    # The build applies an explicit ad hoc signature (codesign --sign -) as its
+    # final step, which is not the same thing as a stray linker signature.
     signature_state = (
-        "ad hoc linker signature only"
+        "explicit ad hoc signature, no Developer ID and not notarized"
         if "Signature=adhoc" in signature_detail
         else "no bundle signature"
     )

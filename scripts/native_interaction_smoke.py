@@ -21,7 +21,7 @@ from Foundation import NSDate, NSRunLoop, NSUserDefaults
 
 from stormpad.app import _build_menu
 from stormpad.block_parser import parse_blocks
-from stormpad.blocks import Block, BlockType, InlineMark, InlineRun, MarkType
+from stormpad.blocks import COLOR_TOKENS, Block, BlockType, InlineMark, InlineRun, MarkType
 from stormpad.dragdrop import (
     NOTE_PASTEBOARD_TYPE,
     PROJECT_PASTEBOARD_TYPE,
@@ -154,7 +154,10 @@ def main() -> int:
                     for index in range(format_menu.numberOfItems())
                     if str(format_menu.itemAtIndex_(index).title()) == color_title
                 )
-                assert colors.numberOfItems() == 9
+                # Built from COLOR_TOKENS, so derive the count instead of
+                # hard-coding it: the palette gained brown and pink after this
+                # check was written and a literal silently went stale.
+                assert colors.numberOfItems() == len(COLOR_TOKENS)
                 assert all(
                     colors.itemAtIndex_(index).image() is not None
                     for index in range(colors.numberOfItems())
