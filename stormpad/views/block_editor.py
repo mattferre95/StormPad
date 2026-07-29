@@ -41,6 +41,9 @@ from AppKit import (
     NSMutableParagraphStyle,
     NSNoBorder,
     NSParagraphStyleAttributeName,
+    NSPasteboardTypeRTF,
+    NSPasteboardTypeRTFD,
+    NSPasteboardTypeString,
     NSScrollerStyleOverlay,
     NSScrollView,
     NSTextAttachment,
@@ -87,6 +90,7 @@ from ..blocks import (
 )
 from ..models import Note, move_transcript_chunk, remove_transcript_chunk
 from ..motion import AnimationToken, Motion
+from ..paste import PastedRun, pasted_blocks
 from ..uihelpers import (
     SaveStatus,
     block_gutter_canvas_y,
@@ -123,6 +127,10 @@ _ATTR_RAW = "StormPadRaw"
 _ATTR_TRANSCRIPT_CHUNK = "StormPadTranscriptChunk"
 _ATTR_IMAGE_WIDTH = "StormPadImageWidth"
 _ZERO_WIDTH = "\u200b"
+# NSFontDescriptor symbolic traits. Read from the descriptor rather than
+# NSFontManager so pasted-font detection does not depend on the shared manager.
+_TRAIT_ITALIC = 1 << 0
+_TRAIT_BOLD = 1 << 1
 _LINE_SEPARATOR = "\u2028"
 _BODY_INSET = 92.0
 _TODO_TEXT_GAP = 9.0
@@ -404,6 +412,19 @@ def editable_prefix_end(
     return min(int(line_end), max(int(line_start), int(decorated_end)))
 
 
+def _font_traits(font) -> int:
+    """Symbolic traits for a pasted font, tolerating fonts without a descriptor."""
+    if font is None:
+        return 0
+    try:
+        return int(font.fontDescriptor().symbolicTraits())
+    except (AttributeError, TypeError, ValueError):
+        try:
+            return int(NSFontManager.sharedFontManager().traitsOfFont_(font))
+        except (AttributeError, TypeError, ValueError):
+            return 0
+
+
 class BlockTextView(NSTextView):
     """NSTextView with local file-drop and to-do click handling."""
 
@@ -429,6 +450,18 @@ class BlockTextView(NSTextView):
         editor = getattr(self, "stormpad_editor", None)
         files = pasteboard.propertyListForType_(NSFilenamesPboardType) or []
         return bool(editor and editor.handle_dropped_files([Path(str(item)) for item in files]))
+
+    def readSelectionFromPasteboard_(self, pasteboard):  # noqa: N802
+        """Single choke point for every paste and text drop into the body.
+
+        ``paste:``, ``pasteAsRichText:``, and text drags all funnel through
+        here, so sanitizing once covers them all. Falling through to super
+        keeps AppKit's own handling for anything the editor declines.
+        """
+        editor = getattr(self, "stormpad_editor", None)
+        if editor is not None and editor.handle_paste(pasteboard):
+            return True
+        return objc.super(BlockTextView, self).readSelectionFromPasteboard_(pasteboard)
 
     def mouseDown_(self, event):  # noqa: N802
         editor = getattr(self, "stormpad_editor", None)
@@ -1876,6 +1909,137 @@ class Editor(NSObject):
         if blocks[index].kind == BlockType.TRANSCRIPT:
             blocks[index].collapsed = not blocks[index].collapsed
             self._replace_document(blocks, register_undo=True, focus_index=index)
+
+    # -- paste ---------------------------------------------------------------
+
+    @objc.python_method
+    def _pasted_runs(self, pasteboard) -> list[PastedRun]:
+        """Read a pasteboard into plain, styling-free run descriptions.
+
+        RTF is preferred because it carries bold/italic/underline/links while
+        staying inert. HTML is deliberately never parsed: building an attributed
+        string from HTML can fetch remote resources, and the plain-text fallback
+        below is both safer and sufficient.
+        """
+        data = pasteboard.dataForType_(NSPasteboardTypeRTF)
+        if data is None:
+            data = pasteboard.dataForType_(NSPasteboardTypeRTFD)
+        if data is not None:
+            attributed = NSAttributedString.alloc().initWithRTF_documentAttributes_(data, None)
+            if isinstance(attributed, tuple):
+                attributed = attributed[0]
+            if attributed is not None and attributed.length():
+                return self._runs_from_attributed(attributed)
+        plain = pasteboard.stringForType_(NSPasteboardTypeString)
+        return [PastedRun(str(plain))] if plain else []
+
+    @objc.python_method
+    def _runs_from_attributed(self, attributed) -> list[PastedRun]:
+        """Map native attributes onto the few fields StormPad understands."""
+        runs: list[PastedRun] = []
+        cursor = 0
+        total = int(attributed.length())
+        while cursor < total:
+            try:
+                attrs, effective = attributed.attributesAtIndex_effectiveRange_(cursor, None)
+                end = min(total, int(effective.location + effective.length))
+            except (IndexError, TypeError, ValueError):
+                attrs, end = {}, cursor + 1
+            end = max(end, cursor + 1)
+            text = str(
+                attributed.attributedSubstringFromRange_(
+                    NSMakeRange(cursor, end - cursor)
+                ).string()
+            )
+            traits = _font_traits(attrs.get(NSFontAttributeName))
+            link = attrs.get(NSLinkAttributeName)
+            if link is not None and not isinstance(link, str):
+                link = str(link.absoluteString()) if hasattr(link, "absoluteString") else str(link)
+            runs.append(
+                PastedRun(
+                    text=text,
+                    bold=bool(traits & _TRAIT_BOLD),
+                    italic=bool(traits & _TRAIT_ITALIC),
+                    underline=bool(attrs.get(NSUnderlineStyleAttributeName)),
+                    link=link,
+                )
+            )
+            cursor = end
+        return runs
+
+    @objc.python_method
+    def _sanitized_paste_string(self, runs: list[PastedRun]):
+        """Render sanitized runs with the current theme's own attributes.
+
+        The first pasted paragraph joins the block under the caret so pasting
+        mid-sentence keeps that block's appearance. Later paragraphs become
+        ordinary text blocks rather than inheriting a heading or list prefix.
+        """
+        blocks = pasted_blocks(runs)
+        if not blocks:
+            return None
+        live = self._extract_blocks()
+        index = min(self._current_block_index(), max(0, len(live) - 1))
+        caret_block = live[index] if live else Block()
+        first_base = self._block_base_attributes(
+            Block(kind=caret_block.kind, indent=caret_block.indent)
+            if caret_block.kind in PARAGRAPH_BLOCK_TYPES
+            else Block()
+        )
+        text_base = self._block_base_attributes(Block())
+        result = NSMutableAttributedString.alloc().init()
+        for position, block in enumerate(blocks):
+            base = first_base if position == 0 else text_base
+            if position:
+                result.appendAttributedString_(
+                    NSAttributedString.alloc().initWithString_attributes_("\n", text_base)
+                )
+            for run in block.runs:
+                result.appendAttributedString_(
+                    NSAttributedString.alloc().initWithString_attributes_(
+                        run.text, self._inline_attributes(base, run)
+                    )
+                )
+        return result
+
+    @objc.python_method
+    def handle_paste(self, pasteboard) -> bool:
+        """Replace the selection with sanitized pasted content, as one edit."""
+        runs = self._pasted_runs(pasteboard)
+        if not runs:
+            return False
+        attributed = self._sanitized_paste_string(runs)
+        if attributed is None or not attributed.length():
+            return False
+        target = self._body.selectedRange()
+        replacement = str(attributed.string())
+        if not self._body.shouldChangeTextInRange_replacementString_(target, replacement):
+            return False
+        storage = self._body.textStorage()
+        storage.beginEditing()
+        storage.replaceCharactersInRange_withAttributedString_(target, attributed)
+        storage.endEditing()
+        # One didChangeText call keeps the whole paste on a single undo step and
+        # lets the delegate run its normal change handling.
+        self._body.didChangeText()
+        caret = int(target.location) + int(attributed.length())
+        self._body.setSelectedRange_(NSMakeRange(caret, 0))
+        # Typing after a paste must not inherit the source's styling.
+        self._reset_typing_attributes_at_caret()
+        return True
+
+    @objc.python_method
+    def _reset_typing_attributes_at_caret(self) -> None:
+        blocks = self._extract_blocks()
+        if not blocks:
+            return
+        index = min(self._current_block_index(), len(blocks) - 1)
+        block = blocks[index]
+        self._body.setTypingAttributes_(
+            self._block_base_attributes(
+                Block(kind=block.kind, checked=block.checked, indent=block.indent)
+            )
+        )
 
     def handle_dropped_files(self, files: list[Path]) -> bool:
         inserted = False
