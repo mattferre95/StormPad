@@ -81,12 +81,18 @@ from ..blocks import (
     empty_return_result,
     insert_block,
     insert_block_after_selection,
+    is_toggle,
     merge_empty_block_backward,
     next_block_after_return,
     numbered_display_number,
     reorder_blocks,
     split_block_after_return,
     toggle_todo,
+)
+from ..collapse import (
+    hidden_indexes,
+    reveal_for_conversion,
+    toggle_range,
 )
 from ..models import Note, move_transcript_chunk, remove_transcript_chunk
 from ..motion import AnimationToken, Motion
@@ -245,6 +251,10 @@ _BLOCK_MENU: tuple[tuple[str, BlockType, str], ...] = (
     ("Bulleted List", BlockType.BULLET, "list.bullet"),
     ("Numbered List", BlockType.NUMBERED, "list.number"),
     ("Quote", BlockType.QUOTE, "quote.opening"),
+    ("Toggle List", BlockType.TOGGLE, "chevron.right"),
+    ("Toggle Heading 1", BlockType.TOGGLE_HEADING_1, "chevron.right.square"),
+    ("Toggle Heading 2", BlockType.TOGGLE_HEADING_2, "chevron.right.square"),
+    ("Toggle Heading 3", BlockType.TOGGLE_HEADING_3, "chevron.right.square"),
     ("Divider", BlockType.DIVIDER, "minus"),
     ("Link", BlockType.LINK, "link"),
     ("Image", BlockType.IMAGE, "photo"),
@@ -261,6 +271,10 @@ _BLOCK_EDIT_MENU: tuple[tuple[str, BlockType, str], ...] = (
     ("Bulleted List", BlockType.BULLET, "list.bullet"),
     ("Numbered List", BlockType.NUMBERED, "list.number"),
     ("Quote", BlockType.QUOTE, "quote.opening"),
+    ("Toggle List", BlockType.TOGGLE, "chevron.right"),
+    ("Toggle Heading 1", BlockType.TOGGLE_HEADING_1, "chevron.right.square"),
+    ("Toggle Heading 2", BlockType.TOGGLE_HEADING_2, "chevron.right.square"),
+    ("Toggle Heading 3", BlockType.TOGGLE_HEADING_3, "chevron.right.square"),
 )
 
 
@@ -425,6 +439,47 @@ def _font_traits(font) -> int:
             return 0
 
 
+
+class FoldingLayoutDelegate(NSObject):
+    """Collapses hidden lines to zero height without touching text storage.
+
+    The complete note always stays in ``NSTextStorage``; only the layout of the
+    ranges listed in ``hidden_ranges`` is suppressed. Combined with a clear
+    temporary foreground attribute (also layout-only), that hides content while
+    leaving every block available to extraction, autosave, search, and export.
+    """
+
+    def initWithEditor_(self, editor):  # noqa: N802
+        self = objc.super(FoldingLayoutDelegate, self).init()
+        if self is None:
+            return None
+        self._hidden: list[tuple[int, int]] = []
+        return self
+
+    def setHiddenRanges_(self, ranges):  # noqa: N802
+        self._hidden = [(int(start), int(length)) for start, length in ranges]
+
+    @objc.python_method
+    def _is_hidden(self, location: int) -> bool:
+        return any(start <= location < start + length for start, length in self._hidden)
+
+    def layoutManager_shouldSetLineFragmentRect_lineFragmentUsedRect_baselineOffset_inTextContainer_forGlyphRange_(  # noqa: N802,E501
+        self, manager, rect, used, baseline, container, glyph_range
+    ):
+        if not self._hidden:
+            return (False, rect, used, baseline)
+        try:
+            chars = manager.characterRangeForGlyphRange_actualGlyphRange_(glyph_range, None)[0]
+            location = int(chars.location)
+        except (AttributeError, IndexError, TypeError, ValueError):
+            return (False, rect, used, baseline)
+        if not self._is_hidden(location):
+            return (False, rect, used, baseline)
+        flat = ((rect[0][0], rect[0][1]), (rect[1][0], 0.0))
+        flat_used = ((used[0][0], used[0][1]), (used[1][0], 0.0))
+        return (True, flat, flat_used, 0.0)
+
+
 class BlockTextView(NSTextView):
     """NSTextView with local file-drop and to-do click handling."""
 
@@ -478,7 +533,8 @@ class BlockTextView(NSTextView):
                 line_attrs = self.textStorage().attributesAtIndex_effectiveRange_(
                     min(line_start, self.textStorage().length() - 1), None
                 )[0]
-                if line_attrs.get(_ATTR_DECORATION) == "todo":
+                if line_attrs.get(_ATTR_DECORATION) in ("todo", "toggle"):
+                    is_chevron = line_attrs.get(_ATTR_DECORATION) == "toggle"
                     layout = self.layoutManager()
                     glyph = layout.glyphRangeForCharacterRange_actualCharacterRange_(
                         NSMakeRange(line_start, 1), None
@@ -497,7 +553,10 @@ class BlockTextView(NSTextView):
                         <= float(point.y)
                         <= float(hit.origin.y + inset.height + hit.size.height) + 4.0
                     ):
-                        editor.toggle_todo_at_location(line_start)
+                        if is_chevron:
+                            editor.toggle_collapsed_at_location(line_start)
+                        else:
+                            editor.toggle_todo_at_location(line_start)
                         return
                 attrs = self.textStorage().attributesAtIndex_effectiveRange_(index, None)[0]
                 if attrs.get(_ATTR_BLOCK) == BlockType.IMAGE.value:
@@ -686,6 +745,10 @@ class Editor(NSObject):
 
         body = BlockTextView.alloc().initWithFrame_(NSMakeRect(0, 0, 500, 500))
         body.stormpad_editor = self
+        # Layout-only folding. Retained on the editor so the delegate outlives
+        # this method; the layout manager holds it weakly.
+        self._folding = FoldingLayoutDelegate.alloc().initWithEditor_(self)
+        body.layoutManager().setDelegate_(self._folding)
         body.setMinSize_(NSMakeSize(0.0, 0.0))
         body.setMaxSize_(NSMakeSize(1.0e7, 1.0e7))
         body.setVerticallyResizable_(True)
@@ -899,10 +962,68 @@ class Editor(NSObject):
             storage.setAttributedString_(result)
         finally:
             self._loading = was_loading
+        self._apply_folding(document)
         if focus_index is not None:
             self._select_block(focus_index)
             self.focus_body()
         self._emit_body_change()
+
+    @objc.python_method
+    def _line_ranges(self) -> list[tuple[int, int]]:
+        """Character range of every rendered line, including its newline."""
+        ranges: list[tuple[int, int]] = []
+        location = 0
+        for line in str(self._body.string()).split("\n"):
+            length = _utf16_length(line) + 1
+            ranges.append((location, length))
+            location += length
+        return ranges
+
+    @objc.python_method
+    def _apply_folding(self, blocks: list[Block]) -> None:
+        """Hide collapsed content at the layout level only.
+
+        Text storage is never modified here. Hidden lines get a clear temporary
+        attribute (which lives in the layout manager, not the storage) and a
+        zero-height line fragment, so extraction and autosave continue to see the
+        complete note.
+        """
+        manager = self._body.layoutManager()
+        if manager is None:
+            return
+        total = int(self._body.textStorage().length())
+        full = NSMakeRange(0, total)
+        manager.setTemporaryAttributes_forCharacterRange_({}, full)
+        hidden = hidden_indexes(blocks)
+        ranges: list[tuple[int, int]] = []
+        if hidden:
+            lines = self._line_ranges()
+            for index in sorted(hidden):
+                if index >= len(lines):
+                    continue
+                start, length = lines[index]
+                length = min(length, max(0, total - start))
+                if length <= 0:
+                    continue
+                ranges.append((start, length))
+                manager.setTemporaryAttributes_forCharacterRange_(
+                    {NSForegroundColorAttributeName: NSColor.clearColor()},
+                    NSMakeRange(start, length),
+                )
+        self._folding.setHiddenRanges_(ranges)
+        self._hidden_ranges = ranges
+        manager.invalidateLayoutForCharacterRange_actualCharacterRange_(full, None)
+
+    @objc.python_method
+    def _hidden_character_ranges(self) -> list[tuple[int, int]]:
+        return list(getattr(self, "_hidden_ranges", []))
+
+    @objc.python_method
+    def _location_is_hidden(self, location: int) -> bool:
+        return any(
+            start <= int(location) < start + length
+            for start, length in self._hidden_character_ranges()
+        )
 
     def restoreDocument_(self, payload):  # noqa: N802
         current = self._body.textStorage().copy()
@@ -919,6 +1040,10 @@ class Editor(NSObject):
             self._sync_selected_image_from_selection()
         finally:
             self._loading = False
+        # Collapse state travels inside the restored attributes, so recompute the
+        # hidden ranges rather than trusting the ones from before the undo.
+        self._apply_folding(self._extract_blocks())
+        self._move_caret_out_of_hidden()
         self._emit_body_change()
 
     def _display_number(
@@ -952,6 +1077,10 @@ class Editor(NSObject):
         elif block.kind == BlockType.NUMBERED:
             # Markdown keeps every item as "1."; only the display counts up.
             prefix, decoration = f"{self._display_number(block, block_index, document)}. ", "prefix"
+        elif is_toggle(block):
+            # Disclosure chevron: right when collapsed, down when expanded. It is
+            # decoration, so it never reaches the block's text or the Markdown.
+            prefix, decoration = ("▸ " if block.collapsed else "▾ "), "toggle"
         elif block.kind == BlockType.QUOTE:
             prefix, decoration = "❝ ", "prefix"
         elif block.kind == BlockType.FILE:
@@ -1172,12 +1301,19 @@ class Editor(NSObject):
             BlockType.HEADING_1: 26.0,
             BlockType.HEADING_2: 22.0,
             BlockType.HEADING_3: 19.0,
+            # A toggle heading is the same heading, so it gets the same size.
+            BlockType.TOGGLE_HEADING_1: 26.0,
+            BlockType.TOGGLE_HEADING_2: 22.0,
+            BlockType.TOGGLE_HEADING_3: 19.0,
         }.get(block.kind, 16.5)
         font = serif_font(size)
         if block.kind in (
             BlockType.HEADING_1,
             BlockType.HEADING_2,
             BlockType.HEADING_3,
+            BlockType.TOGGLE_HEADING_1,
+            BlockType.TOGGLE_HEADING_2,
+            BlockType.TOGGLE_HEADING_3,
         ):
             font = NSFontManager.sharedFontManager().convertFont_toHaveTrait_(font, NSBoldFontMask)
         return {
@@ -1775,6 +1911,9 @@ class Editor(NSObject):
             self._clear_command_context()
             return
         index = min(max(int(index), 0), len(blocks) - 1)
+        # A collapsed toggle losing its chevron would leave its content hidden
+        # with nothing left to reveal it, so expand first.
+        blocks = reveal_for_conversion(blocks, index)
         converted = convert_selected_blocks(blocks, [index], kind)
         if converted == blocks:
             self._clear_command_context()
@@ -1850,6 +1989,8 @@ class Editor(NSObject):
         indices = block_indices_for_selection(
             str(self._body.string()), selection[0], selection[1]
         )
+        for candidate in indices:
+            blocks = reveal_for_conversion(blocks, candidate)
         converted = convert_selected_blocks(blocks, indices, kind)
         if converted == blocks:
             self._clear_command_context()
@@ -2040,6 +2181,74 @@ class Editor(NSObject):
                 Block(kind=block.kind, checked=block.checked, indent=block.indent)
             )
         )
+
+    # -- collapsible toggles -------------------------------------------------
+
+    @objc.python_method
+    def toggle_collapsed_at_location(self, location: int) -> None:
+        """Flip one toggle's collapse state from a chevron click.
+
+        Only the summary block changes. Owned content is never touched, so this
+        can never remove anything from the note.
+        """
+        blocks = self._extract_blocks()
+        index = block_index_for_location(str(self._body.string()), int(location))
+        if not (0 <= index < len(blocks)) or not is_toggle(blocks[index]):
+            return
+        collapsing = not blocks[index].collapsed
+        blocks[index].collapsed = collapsing
+        focus = None
+        if collapsing:
+            start, end = toggle_range(blocks, index)
+            caret = block_index_for_location(
+                str(self._body.string()), int(self._body.selectedRange().location)
+            )
+            if start <= caret < end:
+                # The caret is inside content that is about to disappear.
+                focus = index
+        self._replace_document(blocks, register_undo=True, focus_index=focus)
+
+    @objc.python_method
+    def _move_caret_out_of_hidden(self) -> None:
+        location = int(self._body.selectedRange().location)
+        if not self._location_is_hidden(location):
+            return
+        safe = location
+        while safe > 0 and self._location_is_hidden(safe):
+            safe -= 1
+        self._body.setSelectedRange_(NSMakeRange(max(0, safe), 0))
+
+    @objc.python_method
+    def _toggle_return(self, blocks: list[Block], index: int) -> bool:
+        """Return on a Toggle List summary. See the feature notes for the rule.
+
+        Expanding first is deliberate: text is never inserted into a range the
+        user cannot see.
+        """
+        block = blocks[index]
+        if block.kind != BlockType.TOGGLE or block.is_empty:
+            return False
+        blocks[index].collapsed = False
+        start, end = toggle_range(blocks, index)
+        if end > start:
+            # Already has children: land in the first one.
+            self._replace_document(blocks, register_undo=True, focus_index=None)
+            self._select_block_start(start)
+            self.focus_body()
+            self._schedule_caret_visibility(self._body)
+            return True
+        child = Block(kind=BlockType.BULLET, indent=block.indent + 1)
+        blocks.insert(start, child)
+        self._replace_document(blocks, register_undo=True, focus_index=None)
+        self._select_block_start(start)
+        self.focus_body()
+        self._schedule_caret_visibility(self._body)
+        return True
+
+    @objc.python_method
+    def reveal_before_conversion(self, blocks: list[Block], index: int) -> list[Block]:
+        """Expand a toggle that is about to become a normal block."""
+        return reveal_for_conversion(blocks, index)
 
     def handle_dropped_files(self, files: list[Path]) -> bool:
         inserted = False
@@ -2656,6 +2865,8 @@ class Editor(NSObject):
             len(blocks) - 1,
         )
         block = blocks[index]
+        if selection[1] == 0 and self._toggle_return(blocks, index):
+            return
         if selection[1] > 0:
             indices = block_indices_for_selection(
                 str(self._body.string()), selection[0], selection[1]
@@ -2874,6 +3085,25 @@ class Editor(NSObject):
             self.focus_title()
             return True
         return False
+
+    def textView_willChangeSelectionFromCharacterRange_toCharacterRange_(  # noqa: N802
+        self, text_view, old_range, new_range
+    ):
+        """Never let a caret or selection land inside collapsed content.
+
+        Hidden text is still in the storage, so arrow keys and clicks would
+        otherwise walk straight into it. Snapping back to the last visible
+        position keeps hidden ranges unreachable without deleting anything.
+        """
+        if not self._hidden_character_ranges():
+            return new_range
+        location = int(new_range.location)
+        if not self._location_is_hidden(location):
+            return new_range
+        safe = location
+        while safe > 0 and self._location_is_hidden(safe):
+            safe -= 1
+        return NSMakeRange(max(0, safe), 0)
 
     def textView_shouldChangeTextInRange_replacementString_(  # noqa: N802
         self, text_view, selected, replacement

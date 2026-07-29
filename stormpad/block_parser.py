@@ -30,6 +30,53 @@ _TRANSCRIPT = re.compile(
     re.IGNORECASE,
 )
 _COLOR_OPEN = re.compile(r'^<span data-stormpad-(color|highlight)="([^"]+)">')
+_TOGGLE = re.compile(
+    r'^<!--\s*stormpad:toggle(?:\s+collapsed="(true|false)")?\s*-->$',
+    re.IGNORECASE,
+)
+_TOGGLE_HEADING_PREFIXES = (
+    ("### ", BlockType.TOGGLE_HEADING_3),
+    ("## ", BlockType.TOGGLE_HEADING_2),
+    ("# ", BlockType.TOGGLE_HEADING_1),
+)
+_TOGGLE_EMPTY_HEADINGS = {
+    "###": BlockType.TOGGLE_HEADING_3,
+    "##": BlockType.TOGGLE_HEADING_2,
+    "#": BlockType.TOGGLE_HEADING_1,
+}
+
+
+def _toggle_summary(line: str, collapsed: bool) -> Block | None:
+    """Turn the line under a toggle marker into a summary block.
+
+    Returns ``None`` when the following line is not something a toggle can
+    summarize, which leaves the marker to be preserved as raw text and the line
+    to parse normally. Malformed metadata therefore degrades to visible content
+    instead of hiding or dropping anything.
+    """
+    stripped = line.strip()
+    empty_heading = _TOGGLE_EMPTY_HEADINGS.get(stripped)
+    if empty_heading is not None:
+        return Block(kind=empty_heading, collapsed=collapsed)
+    for prefix, kind in _TOGGLE_HEADING_PREFIXES:
+        if stripped.startswith(prefix):
+            return Block(
+                kind=kind,
+                runs=parse_inline(stripped[len(prefix) :]),
+                collapsed=collapsed,
+            )
+    bullet = _BULLET.match(line)
+    if bullet and not _TODO.match(line):
+        spaces, content = bullet.groups()
+        return Block(
+            kind=BlockType.TOGGLE,
+            runs=parse_inline(content),
+            indent=_indent(spaces),
+            collapsed=collapsed,
+        )
+    if stripped == "-":
+        return Block(kind=BlockType.TOGGLE, collapsed=collapsed)
+    return None
 
 
 def _add_mark(runs: list[InlineRun], mark: InlineMark) -> list[InlineRun]:
@@ -215,6 +262,16 @@ def parse_blocks(markdown: str) -> list[Block]:
                 i += 1
             blocks.append(Block(kind=BlockType.RAW, raw="\n".join(raw_lines)))
             continue
+
+        toggle = _TOGGLE.match(line.strip())
+        if toggle and i + 1 < len(lines):
+            summary = _toggle_summary(
+                lines[i + 1], (toggle.group(1) or "false").lower() == "true"
+            )
+            if summary is not None:
+                blocks.append(summary)
+                i += 2
+                continue
 
         transcript = _TRANSCRIPT.match(line.strip())
         if transcript:

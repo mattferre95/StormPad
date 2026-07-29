@@ -7,6 +7,8 @@ from urllib.parse import quote
 
 from .blocks import (
     COLOR_TOKENS,
+    HEADING_LEVELS,
+    TOGGLE_BLOCK_TYPES,
     Block,
     BlockType,
     InlineMark,
@@ -62,6 +64,17 @@ def serialize_inline(runs: list[InlineRun]) -> str:
 def serialize_block(block: Block) -> str:
     text = serialize_inline(block.runs)
     indent = "  " * block.indent
+    if block.kind in TOGGLE_BLOCK_TYPES:
+        # A metadata comment above the ordinary Markdown line, matching the
+        # existing stormpad:image convention. Dropping the comment leaves a
+        # plain bullet or heading, so the summary and everything it owned stay
+        # readable rather than disappearing.
+        collapsed = "true" if block.collapsed else "false"
+        marker = f'<!-- stormpad:toggle collapsed="{collapsed}" -->'
+        if block.kind == BlockType.TOGGLE:
+            return f"{marker}\n{indent}- {text}".rstrip()
+        hashes = "#" * HEADING_LEVELS[block.kind]
+        return f"{marker}\n{hashes} {text}".rstrip()
     if block.kind == BlockType.TEXT:
         return text
     if block.kind == BlockType.HEADING_1:

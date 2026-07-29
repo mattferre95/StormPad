@@ -35,6 +35,8 @@ without an account or service dependency.
   demonstrates headings, formatting, lists, links, organization, sharing, and
   local storage. It can be edited, moved, renamed, or deleted like any other
   note.
+- Collapsible Toggle Lists and Toggle Headings keep long notes easy to scan
+  without removing content.
 - Projects, pinned notes, global search, and categories keep ideas organized.
 - A block-based editor supports prose, to-dos, lists, headings, quotes, links,
   images, and files.
@@ -72,6 +74,7 @@ Only follow these steps when StormPad was downloaded from the
 - Local filesystem-backed Projects and Unfiled notes
 - Pinned notes, global search, categories, and project icons
 - Block-based editing with to-dos, lists, headings, quotes, links, images, and files
+- Collapsible Toggle Lists and Toggle Headings
 - Bold, italic, underline, semantic text colors, and highlights
 - Native undo and redo, autosave, export, Finder actions, and Speak Selection
 - Note and Project sharing through native macOS services

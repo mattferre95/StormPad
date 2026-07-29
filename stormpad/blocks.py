@@ -24,6 +24,12 @@ class BlockType(StrEnum):
     IMAGE = "image"
     FILE = "file"
     TRANSCRIPT = "transcript"
+    # Collapsible summaries. Each hides the content it owns without removing it
+    # from the note; see :mod:`stormpad.collapse` for the ownership rules.
+    TOGGLE = "toggle"
+    TOGGLE_HEADING_1 = "toggle_heading_1"
+    TOGGLE_HEADING_2 = "toggle_heading_2"
+    TOGGLE_HEADING_3 = "toggle_heading_3"
     RAW = "raw"  # unsupported Markdown preserved verbatim
 
 
@@ -60,8 +66,66 @@ PARAGRAPH_BLOCK_TYPES: frozenset[BlockType] = frozenset(
         BlockType.BULLET,
         BlockType.NUMBERED,
         BlockType.QUOTE,
+        BlockType.TOGGLE,
+        BlockType.TOGGLE_HEADING_1,
+        BlockType.TOGGLE_HEADING_2,
+        BlockType.TOGGLE_HEADING_3,
     }
 )
+
+#: Collapsible summary blocks. One shared implementation covers all four.
+TOGGLE_BLOCK_TYPES: frozenset[BlockType] = frozenset(
+    {
+        BlockType.TOGGLE,
+        BlockType.TOGGLE_HEADING_1,
+        BlockType.TOGGLE_HEADING_2,
+        BlockType.TOGGLE_HEADING_3,
+    }
+)
+
+#: Heading level for every block that acts as a section boundary. Normal and
+#: toggle headings of the same level are equivalent boundaries.
+HEADING_LEVELS: dict[BlockType, int] = {
+    BlockType.HEADING_1: 1,
+    BlockType.TOGGLE_HEADING_1: 1,
+    BlockType.HEADING_2: 2,
+    BlockType.TOGGLE_HEADING_2: 2,
+    BlockType.HEADING_3: 3,
+    BlockType.TOGGLE_HEADING_3: 3,
+}
+
+#: Blocks whose ``indent`` is semantic. A plain paragraph cannot carry indent in
+#: StormPad's Markdown (four leading spaces already means preserved raw text),
+#: so only these can be Toggle List children.
+INDENTED_BLOCK_TYPES: frozenset[BlockType] = frozenset(
+    {
+        BlockType.TODO,
+        BlockType.BULLET,
+        BlockType.NUMBERED,
+        BlockType.TOGGLE,
+    }
+)
+
+#: Normal block each toggle turns back into, and the reverse.
+TOGGLE_TO_PLAIN: dict[BlockType, BlockType] = {
+    BlockType.TOGGLE: BlockType.TEXT,
+    BlockType.TOGGLE_HEADING_1: BlockType.HEADING_1,
+    BlockType.TOGGLE_HEADING_2: BlockType.HEADING_2,
+    BlockType.TOGGLE_HEADING_3: BlockType.HEADING_3,
+}
+PLAIN_TO_TOGGLE: dict[BlockType, BlockType] = {
+    plain: toggle for toggle, plain in TOGGLE_TO_PLAIN.items()
+}
+
+
+def is_toggle(block: Block) -> bool:
+    """Whether ``block`` is a collapsible summary."""
+    return block.kind in TOGGLE_BLOCK_TYPES
+
+
+def heading_level(block: Block) -> int | None:
+    """Section level for a heading or toggle heading, else ``None``."""
+    return HEADING_LEVELS.get(block.kind)
 
 
 @dataclass(frozen=True, order=True)
@@ -226,12 +290,14 @@ def convert_block(block: Block, kind: BlockType) -> Block:
         kind=kind,
         runs=list(block.runs),
         checked=block.checked if kind == BlockType.TODO else False,
-        indent=(
-            block.indent if kind in (BlockType.TODO, BlockType.BULLET, BlockType.NUMBERED) else 0
-        ),
+        indent=(block.indent if kind in INDENTED_BLOCK_TYPES else 0),
         target=block.target if kind in (BlockType.LINK, BlockType.IMAGE, BlockType.FILE) else None,
         alt=block.alt if kind == BlockType.IMAGE else None,
-        collapsed=block.collapsed if kind == BlockType.TRANSCRIPT else False,
+        collapsed=(
+            block.collapsed
+            if kind == BlockType.TRANSCRIPT or kind in TOGGLE_BLOCK_TYPES
+            else False
+        ),
         display_width=block.display_width if kind == BlockType.IMAGE else None,
     )
 

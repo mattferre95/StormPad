@@ -107,6 +107,8 @@ project folder.
 | Text color | `<span data-stormpad-color="blue">text</span>` |
 | Highlight | `<span data-stormpad-highlight="yellow">text</span>` |
 | Transcript placement | `<!-- stormpad:transcript collapsed="false" -->` |
+| Toggle List | `<!-- stormpad:toggle collapsed="false" -->` + `- summary` |
+| Toggle Heading 1-3 | `<!-- stormpad:toggle … -->` + `#`, `##`, `###` |
 
 Allowed semantic color names are `default`, `gray`, `blue`, `cyan`, `green`,
 `yellow`, `orange`, `red`, and `purple`. Arbitrary style/script content is
@@ -137,6 +139,51 @@ moving, or deleting the note does not bring it back, and a relaunch, update, or
 reinstall cannot duplicate it. A failed write rolls the empty notes directory
 back and leaves the marker unset, so the next launch retries instead of
 silently skipping the note.
+
+## Collapsible toggles
+
+Toggle List and Toggle Heading 1-3 are ordinary blocks preceded by one metadata
+comment, following the same convention as `stormpad:image`:
+
+```markdown
+<!-- stormpad:toggle collapsed="true" -->
+- Launch checklist
+
+  - Finalize homepage
+
+  - Build the DMG
+
+Normal paragraph outside the toggle
+
+<!-- stormpad:toggle collapsed="false" -->
+## Product direction
+```
+
+The line beneath the comment decides the kind: a bullet becomes a Toggle List,
+and `#`, `##`, or `###` become Toggle Heading 1, 2, or 3. `collapsed` is the
+existing `Block.collapsed` property and accepts only `true` or `false`.
+
+**Collapsing hides nothing from the file.** A collapsed toggle still serializes
+every block it owns, so search, export, sharing, Copy Note, and autosave all see
+the complete note. Collapse is applied in the editor with layout-only
+mechanisms (a clear temporary attribute plus a zero-height line fragment), and
+the full document always remains in the text storage that saving reads from.
+
+Ownership follows the existing structure rather than a stored child list:
+
+- A **Toggle List** owns the following blocks indented deeper than itself and
+  stops at the first block whose indent is equal or shallower. Only blocks that
+  carry indent (to-dos, bullets, numbered items, and nested toggles) can be
+  children; a plain paragraph cannot, because four leading spaces already means
+  preserved raw text.
+- A **Toggle Heading** owns everything until the next heading of the same or
+  higher level, counting normal and toggle headings alike, so a section runs to
+  the end of the note when nothing bounds it.
+
+Unknown or malformed toggle metadata is preserved as raw text and the line below
+it parses as an ordinary bullet or heading, so a bad marker degrades to fully
+visible content and never hides or drops anything. Notes without toggle metadata
+parse exactly as before.
 
 ## IDs and migration
 
