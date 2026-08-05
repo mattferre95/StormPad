@@ -8,6 +8,7 @@ from urllib.parse import unquote
 
 from .blocks import (
     COLOR_TOKENS,
+    DEFAULT_IMAGE_ALIGNMENT,
     Block,
     BlockType,
     InlineMark,
@@ -20,10 +21,31 @@ _TODO = re.compile(r"^(\s*)-\s+\[([ xX])\]\s*(.*)$")
 _BULLET = re.compile(r"^(\s*)[-*+]\s+(.*)$")
 _NUMBERED = re.compile(r"^(\s*)\d+[.)]\s+(.*)$")
 _IMAGE = re.compile(r"^!\[([^\]]*)\]\(([^)]+)\)$")
-_IMAGE_METADATA = re.compile(
-    r'^<!--\s*stormpad:image\s+width="([0-9]+(?:\.[0-9]+)?)"\s*-->$',
-    re.IGNORECASE,
-)
+_IMAGE_METADATA = re.compile(r"^<!--\s*stormpad:image\b([^>]*)-->$", re.IGNORECASE)
+_META_WIDTH = re.compile(r'width="([0-9]+(?:\.[0-9]+)?)"', re.IGNORECASE)
+_META_ALIGNMENT = re.compile(r'alignment="(left|center|right)"', re.IGNORECASE)
+
+
+def _image_metadata(attributes: str) -> tuple[float | None, str]:
+    """Read width and alignment from an image marker, tolerating anything else.
+
+    Unknown, missing, or malformed values fall back rather than raising, so a bad
+    marker can never cost the note its image or its attachment path.
+    """
+    width_match = _META_WIDTH.search(attributes)
+    width: float | None = None
+    if width_match:
+        try:
+            candidate = float(width_match.group(1))
+        except ValueError:
+            candidate = 0.0
+        if candidate > 0.0:
+            width = candidate
+    alignment_match = _META_ALIGNMENT.search(attributes)
+    alignment = alignment_match.group(1).lower() if alignment_match else DEFAULT_IMAGE_ALIGNMENT
+    return width, alignment
+
+
 _LINK = re.compile(r"^\[([^\]]*)\]\(([^)]+)\)$")
 _TRANSCRIPT = re.compile(
     r'^<!--\s*stormpad:transcript(?:\s+collapsed="(true|false)")?\s*-->$',
@@ -289,13 +311,15 @@ def parse_blocks(markdown: str) -> list[Block]:
             image = _IMAGE.match(lines[i + 1].strip())
             if image:
                 alt, target = image.groups()
+                width, alignment = _image_metadata(image_metadata.group(1))
                 blocks.append(
                     Block(
                         kind=BlockType.IMAGE,
                         runs=parse_inline(alt),
                         alt=alt,
                         target=unquote(target),
-                        display_width=float(image_metadata.group(1)),
+                        display_width=width,
+                        alignment=alignment,
                     )
                 )
                 i += 2

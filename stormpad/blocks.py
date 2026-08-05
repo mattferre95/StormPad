@@ -42,6 +42,18 @@ class MarkType(StrEnum):
     LINK = "link"
 
 
+#: Image alignment within the editor content column. Not coordinates: StormPad
+#: is a flowing document, so an image is only ever left, centered, or right.
+IMAGE_ALIGNMENTS: tuple[str, ...] = ("left", "center", "right")
+DEFAULT_IMAGE_ALIGNMENT = "left"
+
+
+def normalize_alignment(value: str | None) -> str:
+    """Return a supported alignment, falling back to left for anything else."""
+    text = str(value or "").strip().casefold()
+    return text if text in IMAGE_ALIGNMENTS else DEFAULT_IMAGE_ALIGNMENT
+
+
 COLOR_TOKENS: tuple[str, ...] = (
     "default",
     "gray",
@@ -212,9 +224,11 @@ class Block:
     raw: str | None = None
     collapsed: bool = False
     display_width: float | None = None
+    alignment: str = DEFAULT_IMAGE_ALIGNMENT
 
     def __post_init__(self) -> None:
         self.runs = coalesce_runs(self.runs)
+        self.alignment = normalize_alignment(self.alignment)
         self.indent = max(0, int(self.indent))
         if self.display_width is not None:
             self.display_width = min(1600.0, max(96.0, float(self.display_width)))
@@ -299,6 +313,7 @@ def convert_block(block: Block, kind: BlockType) -> Block:
             else False
         ),
         display_width=block.display_width if kind == BlockType.IMAGE else None,
+        alignment=block.alignment if kind == BlockType.IMAGE else DEFAULT_IMAGE_ALIGNMENT,
     )
 
 
@@ -400,6 +415,7 @@ def split_block_after_return(block: Block, offset: int) -> tuple[Block, Block]:
         alt=block.alt,
         collapsed=block.collapsed,
         display_width=block.display_width,
+        alignment=block.alignment,
     )
     second = next_block_after_return(block)
     second.runs = after

@@ -7,6 +7,7 @@ from urllib.parse import quote
 
 from .blocks import (
     COLOR_TOKENS,
+    DEFAULT_IMAGE_ALIGNMENT,
     HEADING_LEVELS,
     TOGGLE_BLOCK_TYPES,
     Block,
@@ -15,6 +16,7 @@ from .blocks import (
     InlineRun,
     MarkType,
     coalesce_runs,
+    normalize_alignment,
 )
 
 
@@ -98,10 +100,17 @@ def serialize_block(block: Block) -> str:
     if block.kind == BlockType.IMAGE:
         alt = block.alt if block.alt is not None else block.text
         image = f"![{_escape_text(alt)}]({_safe_target(block.target or '')})"
-        if block.display_width is None:
+        attributes: list[str] = []
+        if block.display_width is not None:
+            width = f"{block.display_width:.2f}".rstrip("0").rstrip(".")
+            attributes.append(f'width="{width}"')
+        # Left is the default, so it is never written. That keeps every existing
+        # image note byte-identical when it is opened and saved unchanged.
+        if normalize_alignment(block.alignment) != DEFAULT_IMAGE_ALIGNMENT:
+            attributes.append(f'alignment="{normalize_alignment(block.alignment)}"')
+        if not attributes:
             return image
-        width = f"{block.display_width:.2f}".rstrip("0").rstrip(".")
-        return f'<!-- stormpad:image width="{width}" -->\n{image}'
+        return f"<!-- stormpad:image {' '.join(attributes)} -->\n{image}"
     if block.kind == BlockType.FILE:
         return f"[{text}]({_safe_target(block.target or '')})"
     if block.kind == BlockType.TRANSCRIPT:

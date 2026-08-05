@@ -109,6 +109,7 @@ project folder.
 | Transcript placement | `<!-- stormpad:transcript collapsed="false" -->` |
 | Toggle List | `<!-- stormpad:toggle collapsed="false" -->` + `- summary` |
 | Toggle Heading 1-3 | `<!-- stormpad:toggle … -->` + `#`, `##`, `###` |
+| Image width / alignment | `<!-- stormpad:image width="640" alignment="center" -->` |
 
 Allowed semantic color names are `default`, `gray`, `blue`, `cyan`, `green`,
 `yellow`, `orange`, `red`, and `purple`. Arbitrary style/script content is
@@ -139,6 +140,36 @@ moving, or deleting the note does not bring it back, and a relaunch, update, or
 reinstall cannot duplicate it. A failed write rolls the empty notes directory
 back and leaves the marker unset, so the next launch retries instead of
 silently skipping the note.
+
+## Image width and alignment
+
+An image block may carry one metadata comment, the same convention transcripts
+and toggles use:
+
+```markdown
+<!-- stormpad:image width="640" alignment="center" -->
+![Alt text](../Attachments/<note-id>/photo.png)
+```
+
+`width` is the displayed point width; it is presentation only and never
+resamples or rewrites the source file. `alignment` is `left`, `center`, or
+`right`, positioning the image within the editor content column. StormPad stores
+no coordinates: a note is a flowing document, not a canvas.
+
+`left` is the default and is never written, so an existing image note is
+byte-identical after being opened and saved unchanged. A missing, unknown, or
+malformed `alignment` falls back to `left`; a malformed `width` falls back to the
+natural size. In every failure case the `![...](...)` line and its attachment
+path are preserved, so bad metadata can cost formatting but never the image.
+
+Pasted image data is copied into the note's own attachment directory through the
+normal attachment layer, which sanitizes the filename, writes atomically, and
+never overwrites an existing file. Raw clipboard bitmaps are encoded as PNG to
+keep transparency; local files are copied byte-for-byte. Remote URLs are never
+fetched, and no temporary pasteboard path is ever written into the Markdown.
+
+Image selection, selection borders, and resize handles are view state only and
+appear nowhere in the file.
 
 ## Collapsible toggles
 

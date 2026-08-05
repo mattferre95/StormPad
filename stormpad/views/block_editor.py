@@ -7,6 +7,8 @@ semantics. Markdown conversion remains in the AppKit-free parser/serializer.
 
 from __future__ import annotations
 
+import os
+import tempfile
 from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
@@ -19,12 +21,16 @@ from AppKit import (
     NSBackgroundColorAttributeName,
     NSBaselineOffsetAttributeName,
     NSBezierPath,
+    NSBitmapImageFileTypePNG,
+    NSBitmapImageRep,
     NSBoldFontMask,
     NSButton,
     NSColor,
     NSDirectionalEdgeInsetsMake,
     NSDragOperationCopy,
+    NSEventModifierFlagCommand,
     NSEventModifierFlagOption,
+    NSEventModifierFlagShift,
     NSFilenamesPboardType,
     NSFont,
     NSFontAttributeName,
@@ -41,11 +47,17 @@ from AppKit import (
     NSMutableParagraphStyle,
     NSNoBorder,
     NSParagraphStyleAttributeName,
+    NSPasteboardTypePNG,
     NSPasteboardTypeRTF,
     NSPasteboardTypeRTFD,
     NSPasteboardTypeString,
+    NSPasteboardTypeTIFF,
+    NSPasteboardURLReadingFileURLsOnlyKey,
     NSScrollerStyleOverlay,
     NSScrollView,
+    NSTextAlignmentCenter,
+    NSTextAlignmentLeft,
+    NSTextAlignmentRight,
     NSTextAttachment,
     NSTextAttachmentCell,
     NSTextField,
@@ -84,6 +96,7 @@ from ..blocks import (
     is_toggle,
     merge_empty_block_backward,
     next_block_after_return,
+    normalize_alignment,
     numbered_display_number,
     reorder_blocks,
     split_block_after_return,
@@ -132,6 +145,7 @@ _ATTR_LINK = "StormPadLink"
 _ATTR_RAW = "StormPadRaw"
 _ATTR_TRANSCRIPT_CHUNK = "StormPadTranscriptChunk"
 _ATTR_IMAGE_WIDTH = "StormPadImageWidth"
+_ATTR_IMAGE_ALIGNMENT = "StormPadImageAlignment"
 _ZERO_WIDTH = "\u200b"
 # NSFontDescriptor symbolic traits. Read from the descriptor rather than
 # NSFontManager so pasted-font detection does not depend on the shared manager.
@@ -151,6 +165,12 @@ _DIVIDER_THICKNESS = 1.0
 _IMAGE_MIN_WIDTH = 96.0
 _IMAGE_DEFAULT_MAX_WIDTH = 520.0
 _IMAGE_HANDLE_SIZE = 10.0
+_IMAGE_HANDLE_HIT = 22.0
+_IMAGE_ALIGNMENT_MAP = {
+    "left": NSTextAlignmentLeft,
+    "center": NSTextAlignmentCenter,
+    "right": NSTextAlignmentRight,
+}
 
 
 class DividerAttachmentCell(NSTextAttachmentCell):
@@ -201,6 +221,19 @@ class DividerAttachmentCell(NSTextAttachmentCell):
         NSBezierPath.fillRect_(rule)
 
 
+
+def _within_hit_area(point, rect, minimum: float) -> bool:
+    """Whether a click lands on a handle, padded out to a usable target size."""
+    pad_x = max(0.0, (minimum - float(rect.size.width)) / 2.0)
+    pad_y = max(0.0, (minimum - float(rect.size.height)) / 2.0)
+    return (
+        float(rect.origin.x) - pad_x <= float(point.x)
+        <= float(rect.origin.x) + float(rect.size.width) + pad_x
+        and float(rect.origin.y) - pad_y <= float(point.y)
+        <= float(rect.origin.y) + float(rect.size.height) + pad_y
+    )
+
+
 class ImageAttachmentCell(NSTextAttachmentCell):
     """Width-aware image cell with a restrained selection outline and handle."""
 
@@ -228,20 +261,47 @@ class ImageAttachmentCell(NSTextAttachmentCell):
         width = min(float(self.display_width), available)
         return NSMakeRect(0.0, 0.0, width, width / self._aspect)
 
+    @objc.python_method
+    def handle_rects(self, frame) -> dict:
+        """Visible handle rectangles keyed by the edge each one drags.
+
+        Corners plus left and right midpoints. Every handle resizes on width and
+        keeps the aspect ratio, so there is no way to distort an image.
+        """
+        size = _IMAGE_HANDLE_SIZE
+        half = size / 2.0
+        x0, y0 = float(frame.origin.x), float(frame.origin.y)
+        width, height = float(frame.size.width), float(frame.size.height)
+        return {
+            "top_left": NSMakeRect(x0 - half, y0 - half, size, size),
+            "top_right": NSMakeRect(x0 + width - half, y0 - half, size, size),
+            "bottom_left": NSMakeRect(x0 - half, y0 + height - half, size, size),
+            "bottom_right": NSMakeRect(x0 + width - half, y0 + height - half, size, size),
+            "left": NSMakeRect(x0 - half, y0 + height / 2.0 - half, size, size),
+            "right": NSMakeRect(x0 + width - half, y0 + height / 2.0 - half, size, size),
+        }
+
     def drawWithFrame_inView_(self, frame, view):  # noqa: N802
         objc.super(ImageAttachmentCell, self).drawWithFrame_inView_(frame, view)
         editor = getattr(self, "editor", None)
-        if editor is None or editor._selected_image_index != self.block_index:
+        if editor is None or self.block_index not in editor._selected_image_indexes:
             return
-        editor._palette.accent.colorWithAlphaComponent_(0.72).set()
-        NSBezierPath.strokeRect_(frame)
-        handle = NSMakeRect(
-            float(frame.origin.x + frame.size.width - _IMAGE_HANDLE_SIZE),
-            float(frame.origin.y + frame.size.height - _IMAGE_HANDLE_SIZE),
-            _IMAGE_HANDLE_SIZE,
-            _IMAGE_HANDLE_SIZE,
-        )
-        NSBezierPath.fillRect_(handle)
+        palette = editor._palette
+        # Theme tokens only, so the chrome stays readable on every theme and
+        # never bakes a colour into the image itself.
+        palette.accent.colorWithAlphaComponent_(0.14).set()
+        NSBezierPath.fillRect_(frame)
+        palette.accent.colorWithAlphaComponent_(0.9).set()
+        border = NSBezierPath.bezierPathWithRect_(frame)
+        border.setLineWidth_(2.0)
+        border.stroke()
+        for rect in self.handle_rects(frame).values():
+            palette.editor_background.set()
+            NSBezierPath.fillRect_(rect)
+            palette.accent.set()
+            outline = NSBezierPath.bezierPathWithRect_(rect)
+            outline.setLineWidth_(1.5)
+            outline.stroke()
 _BLOCK_MENU: tuple[tuple[str, BlockType, str], ...] = (
     ("Text", BlockType.TEXT, "text.alignleft"),
     ("Heading 1", BlockType.HEADING_1, "textformat.size.larger"),
@@ -560,12 +620,17 @@ class BlockTextView(NSTextView):
                         return
                 attrs = self.textStorage().attributesAtIndex_effectiveRange_(index, None)[0]
                 if attrs.get(_ATTR_BLOCK) == BlockType.IMAGE.value:
-                    editor._selected_image_index = block_index
+                    modifiers = int(event.modifierFlags())
+                    editor.select_image_block(
+                        block_index,
+                        command=bool(modifiers & NSEventModifierFlagCommand),
+                        shift=bool(modifiers & NSEventModifierFlagShift),
+                    )
                     self.setSelectedRange_(NSMakeRange(index, 1))
                     self.setNeedsDisplay_(True)
                     attachment = attrs.get(NSAttachmentAttributeName)
                     cell = attachment.attachmentCell() if attachment is not None else None
-                    if cell is not None:
+                    if cell is not None and hasattr(cell, "handle_rects"):
                         layout = self.layoutManager()
                         glyph = layout.glyphRangeForCharacterRange_actualCharacterRange_(
                             NSMakeRange(index, 1), None
@@ -576,21 +641,27 @@ class BlockTextView(NSTextView):
                             glyph, self.textContainer()
                         )
                         inset = self.textContainerInset()
-                        max_x = float(frame.origin.x + inset.width + frame.size.width)
-                        max_y = float(frame.origin.y + inset.height + frame.size.height)
-                        if (
-                            float(point.x) >= max_x - 18.0
-                            and float(point.y) >= max_y - 18.0
-                        ):
-                            self._image_resize = (
-                                block_index,
-                                index,
-                                float(point.x),
-                                float(cell.display_width),
-                                cell,
-                            )
+                        shifted = NSMakeRect(
+                            float(frame.origin.x + inset.width),
+                            float(frame.origin.y + inset.height),
+                            float(frame.size.width),
+                            float(frame.size.height),
+                        )
+                        # Generous hit areas: every handle answers to at least
+                        # _IMAGE_HANDLE_HIT points so they are easy to grab.
+                        for edge, rect in cell.handle_rects(shifted).items():
+                            if _within_hit_area(point, rect, _IMAGE_HANDLE_HIT):
+                                self._image_resize = (
+                                    block_index,
+                                    index,
+                                    float(point.x),
+                                    float(cell.display_width),
+                                    cell,
+                                    edge,
+                                )
+                                break
                     return
-                editor._selected_image_index = None
+                editor.clear_image_selection()
                 if attrs.get(_ATTR_DECORATION) == "todo":
                     editor.toggle_todo_at_location(index)
                     return
@@ -614,13 +685,16 @@ class BlockTextView(NSTextView):
         if self._image_resize is None:
             objc.super(BlockTextView, self).mouseDragged_(event)
             return
-        block_index, character_index, start_x, start_width, cell = self._image_resize
+        block_index, character_index, start_x, start_width, cell, edge = self._image_resize
         point = self.convertPoint_fromView_(event.locationInWindow(), None)
         usable = max(
             _IMAGE_MIN_WIDTH,
             float(self.textContainer().containerSize().width) - 8.0,
         )
-        width = min(usable, max(_IMAGE_MIN_WIDTH, start_width + float(point.x) - start_x))
+        delta = float(point.x) - start_x
+        if edge in ("top_left", "bottom_left", "left"):
+            delta = -delta
+        width = min(usable, max(_IMAGE_MIN_WIDTH, start_width + delta))
         cell.display_width = width
         self.layoutManager().invalidateLayoutForCharacterRange_actualCharacterRange_(
             NSMakeRange(character_index, 1), None
@@ -631,7 +705,7 @@ class BlockTextView(NSTextView):
         if self._image_resize is None:
             objc.super(BlockTextView, self).mouseUp_(event)
             return
-        block_index, _character_index, _start_x, _start_width, cell = self._image_resize
+        block_index, _character_index, _start_x, _start_width, cell, _edge = self._image_resize
         self._image_resize = None
         editor = getattr(self, "stormpad_editor", None)
         if editor is not None:
@@ -666,7 +740,11 @@ class Editor(NSObject):
         self._command_selection: tuple[int, int] | None = None
         self._context_block_index: int | None = None
         self._context_transcript_chunk: int | None = None
-        self._selected_image_index: int | None = None
+        # Multi-selection is ephemeral: block indexes only, recalculated after
+        # every document change. `_selected_image_index` stays available as the
+        # anchor so the existing selection code keeps working unchanged.
+        self._selected_image_indexes: set[int] = set()
+        self._image_anchor: int | None = None
         self._block_controls_enabled = True
         self._gutter_token = AnimationToken()
         self._block_menu = None
@@ -1255,16 +1333,29 @@ class Editor(NSObject):
         if image is None:
             return None
         size = image.size()
-        width = display_width or min(float(size.width), _IMAGE_DEFAULT_MAX_WIDTH)
+        # Natural width when it fits the column, otherwise scaled down. Never
+        # upscaled: a small image keeps its own size.
+        natural = float(size.width)
+        column = self._content_column_width()
+        width = display_width or min(natural, column)
         attachment = NSTextAttachment.alloc().init()
-        attachment.setAttachmentCell_(
-            ImageAttachmentCell.alloc().initWithImage_width_editor_index_(
-                image,
-                width,
-                self,
-                block_index,
-            )
+        cell = ImageAttachmentCell.alloc().initWithImage_width_editor_index_(
+            image,
+            width,
+            self,
+            block_index,
         )
+        blocks = self._extract_blocks() if self._body.textStorage().length() else []
+        alt = ""
+        if 0 <= block_index < len(blocks):
+            alt = blocks[block_index].alt or ""
+        selected = "selected" if block_index in self._selected_image_indexes else "not selected"
+        label = f"Image{': ' + alt if alt else ''}, {int(width)} points wide, {selected}"
+        try:
+            cell.setAccessibilityLabel_(label)
+        except (AttributeError, TypeError, ValueError):
+            pass
+        attachment.setAttachmentCell_(cell)
         return attachment
 
     def _file_detail(self, relative: str) -> str:
@@ -1297,6 +1388,14 @@ class Editor(NSObject):
         if block.kind == BlockType.QUOTE:
             paragraph.setHeadIndent_(18.0)
             paragraph.setFirstLineHeadIndent_(18.0)
+        if block.kind == BlockType.IMAGE:
+            # Alignment within the content column. Presentation only: the value
+            # is stored semantically, never as coordinates.
+            paragraph.setAlignment_(
+                _IMAGE_ALIGNMENT_MAP.get(
+                    normalize_alignment(block.alignment), NSTextAlignmentLeft
+                )
+            )
         size = {
             BlockType.HEADING_1: 26.0,
             BlockType.HEADING_2: 22.0,
@@ -1328,6 +1427,7 @@ class Editor(NSObject):
             _ATTR_COLLAPSED: bool(block.collapsed),
             _ATTR_RAW: block.raw or "",
             _ATTR_IMAGE_WIDTH: block.display_width or 0.0,
+            _ATTR_IMAGE_ALIGNMENT: normalize_alignment(block.alignment),
         }
 
     def _inline_attributes(self, base: dict, run: InlineRun) -> dict:
@@ -1459,6 +1559,7 @@ class Editor(NSObject):
                     if float(attrs.get(_ATTR_IMAGE_WIDTH, 0.0) or 0.0) > 0.0
                     else None
                 ),
+                alignment=normalize_alignment(attrs.get(_ATTR_IMAGE_ALIGNMENT)),
             )
             if kind == BlockType.RAW:
                 block.raw = block.text
@@ -1654,6 +1755,205 @@ class Editor(NSObject):
             int(effective.location + effective.length),
             line_end,
         )
+
+    @property
+    def _selected_image_index(self) -> int | None:
+        """Anchor image, and the Match Width reference. ``None`` when unselected."""
+        return self._image_anchor
+
+    @_selected_image_index.setter
+    def _selected_image_index(self, value: int | None) -> None:
+        if value is None:
+            self._selected_image_indexes = set()
+            self._image_anchor = None
+        else:
+            self._selected_image_indexes = {int(value)}
+            self._image_anchor = int(value)
+
+    @objc.python_method
+    def _selectable_image_indexes(self) -> list[int]:
+        """Image blocks the user can actually reach, in document order.
+
+        Images hidden inside a collapsed toggle are excluded, so a click or a
+        range selection can never pick up something that is not on screen.
+        """
+        blocks = self._extract_blocks()
+        hidden = hidden_indexes(blocks)
+        return [
+            index
+            for index, block in enumerate(blocks)
+            if block.kind == BlockType.IMAGE and index not in hidden
+        ]
+
+    @objc.python_method
+    def _set_image_selection(self, indexes, anchor: int | None = None) -> None:
+        allowed = set(self._selectable_image_indexes())
+        self._selected_image_indexes = {int(i) for i in indexes} & allowed
+        if anchor is not None and int(anchor) in self._selected_image_indexes:
+            self._image_anchor = int(anchor)
+        elif self._image_anchor not in self._selected_image_indexes:
+            self._image_anchor = (
+                min(self._selected_image_indexes) if self._selected_image_indexes else None
+            )
+        self._refresh_image_selection_chrome()
+
+    @objc.python_method
+    def select_image_block(self, index, command=False, shift=False) -> None:
+        """Apply click, Command-click, or Shift-click selection rules."""
+        index = int(index)
+        if index not in self._selectable_image_indexes():
+            return
+        if command:
+            updated = set(self._selected_image_indexes)
+            if index in updated:
+                updated.discard(index)
+            else:
+                updated.add(index)
+            # The anchor stays on the first selected image so Match Width has a
+            # stable reference; a Command-click only adds or removes.
+            keep = self._image_anchor if self._image_anchor in updated else None
+            self._set_image_selection(updated, anchor=keep if keep is not None else index)
+            return
+        if shift and self._image_anchor is not None:
+            low, high = sorted((self._image_anchor, index))
+            span = [i for i in self._selectable_image_indexes() if low <= i <= high]
+            self._set_image_selection(span, anchor=self._image_anchor)
+            return
+        self._set_image_selection({index}, anchor=index)
+
+    @objc.python_method
+    def clear_image_selection(self) -> None:
+        if not self._selected_image_indexes and self._image_anchor is None:
+            return
+        self._selected_image_indexes = set()
+        self._image_anchor = None
+        self._refresh_image_selection_chrome()
+
+    @objc.python_method
+    def _refresh_image_selection_chrome(self) -> None:
+        self._body.setNeedsDisplay_(True)
+
+    @objc.python_method
+    def selected_image_indexes(self) -> list[int]:
+        return sorted(self._selected_image_indexes)
+
+    # -- image commands ---------------------------------------------------------
+
+    @objc.python_method
+    def _content_column_width(self) -> float:
+        container = self._body.textContainer()
+        try:
+            usable = float(container.size().width) - 2.0 * float(
+                container.lineFragmentPadding()
+            )
+        except (AttributeError, TypeError, ValueError):
+            usable = _IMAGE_DEFAULT_MAX_WIDTH
+        return max(_IMAGE_MIN_WIDTH, usable)
+
+    @objc.python_method
+    def _apply_to_selected_images(self, mutate, status: str) -> bool:
+        """Run one mutation over every selected image as a single undo step."""
+        selection = self.selected_image_indexes()
+        if not selection:
+            return False
+        blocks = self._extract_blocks()
+        changed = False
+        for index in selection:
+            if 0 <= index < len(blocks) and blocks[index].kind == BlockType.IMAGE:
+                if mutate(blocks, index):
+                    changed = True
+        if not changed:
+            return False
+        self._replace_document(blocks, register_undo=True, focus_index=None)
+        self._set_image_selection(selection, anchor=self._image_anchor)
+        self.flash_status(status)
+        return True
+
+    @objc.python_method
+    def align_selected_images(self, alignment: str) -> bool:
+        alignment = normalize_alignment(alignment)
+
+        def mutate(blocks, index):
+            if blocks[index].alignment == alignment:
+                return False
+            blocks[index].alignment = alignment
+            return True
+
+        return self._apply_to_selected_images(mutate, f"Aligned {alignment}")
+
+    @objc.python_method
+    def fit_selected_images_to_column(self) -> bool:
+        width = self._content_column_width()
+
+        def mutate(blocks, index):
+            blocks[index].display_width = width
+            return True
+
+        return self._apply_to_selected_images(mutate, "Fitted to column")
+
+    @objc.python_method
+    def reset_selected_images_to_natural_size(self) -> bool:
+        def mutate(blocks, index):
+            blocks[index].display_width = None
+            return True
+
+        return self._apply_to_selected_images(mutate, "Reset to natural size")
+
+    @objc.python_method
+    def match_selected_image_widths(self) -> bool:
+        """Apply the anchor image's width to every other selected image.
+
+        The anchor is the first image of the selection unless a later
+        Command-click made a different one the anchor.
+        """
+        selection = self.selected_image_indexes()
+        if len(selection) < 2:
+            return False
+        blocks = self._extract_blocks()
+        anchor = self._image_anchor if self._image_anchor in selection else selection[0]
+        reference = blocks[anchor].display_width or self._natural_width_for(blocks[anchor])
+        reference = min(self._content_column_width(), max(_IMAGE_MIN_WIDTH, float(reference)))
+
+        def mutate(blocks, index):
+            if blocks[index].display_width == reference:
+                return False
+            blocks[index].display_width = reference
+            return True
+
+        return self._apply_to_selected_images(mutate, "Matched widths")
+
+    @objc.python_method
+    def _natural_width_for(self, block: Block) -> float:
+        """Point width of the source image, clamped to the content column."""
+        target = block.target or ""
+        if target and self._current is not None:
+            notes_dir = self.notes_dir or self._current.path.parent
+            resolved = attachments.resolve_managed_path(
+                self._current.path, target, notes_dir, self._current.id
+            )
+            if resolved is not None:
+                image = NSImage.alloc().initWithContentsOfFile_(str(resolved))
+                if image is not None and float(image.size().width) > 0.0:
+                    return min(self._content_column_width(), float(image.size().width))
+        return self._content_column_width()
+
+    @objc.python_method
+    def delete_selected_images(self) -> bool:
+        selection = self.selected_image_indexes()
+        if not selection:
+            return False
+        blocks = self._extract_blocks()
+        remaining = [
+            block for index, block in enumerate(blocks) if index not in set(selection)
+        ]
+        if not remaining:
+            remaining = [Block()]
+        self.clear_image_selection()
+        self._replace_document(remaining, register_undo=True, focus_index=None)
+        self.flash_status(
+            f"Deleted {len(selection)} image{'s' if len(selection) != 1 else ''}"
+        )
+        return True
 
     def _sync_selected_image_from_selection(self) -> None:
         selected = self._body.selectedRange()
@@ -2144,8 +2444,107 @@ class Editor(NSObject):
         return result
 
     @objc.python_method
+    def _pasted_image_sources(self, pasteboard) -> list[Path]:
+        """Local image files to import for this paste, newest temp files last.
+
+        Only real bitmap data and local file URLs qualify. Remote URLs and HTML
+        are deliberately ignored: StormPad never fetches anything over the
+        network to satisfy a paste.
+        """
+        try:
+            urls = (
+                pasteboard.readObjectsForClasses_options_(
+                    [NSURL], {NSPasteboardURLReadingFileURLsOnlyKey: True}
+                )
+                or []
+            )
+        except (AttributeError, TypeError, ValueError):
+            urls = []
+        files: list[Path] = []
+        for url in urls:
+            try:
+                if not url.isFileURL():
+                    continue
+                candidate = Path(str(url.path()))
+            except (AttributeError, TypeError, ValueError):
+                continue
+            if candidate.is_file() and attachments.is_image(candidate):
+                files.append(candidate)
+        if files:
+            return files
+        for pasteboard_type in (NSPasteboardTypePNG, NSPasteboardTypeTIFF):
+            data = pasteboard.dataForType_(pasteboard_type)
+            if data is None:
+                continue
+            written = self._write_temporary_png(data)
+            if written is not None:
+                return [written]
+        return []
+
+    @objc.python_method
+    def _write_temporary_png(self, data):
+        """Re-encode clipboard bitmap data as PNG in a temporary file.
+
+        PNG keeps transparency and avoids recompression loss. The file is only a
+        staging area: the attachment layer copies it into the note's own folder
+        and the temporary copy is removed, so no pasteboard path ever reaches
+        the Markdown.
+        """
+        representation = NSBitmapImageRep.imageRepWithData_(data)
+        if representation is None:
+            return None
+        encoded = representation.representationUsingType_properties_(
+            NSBitmapImageFileTypePNG, {}
+        )
+        if encoded is None:
+            return None
+        handle, name = tempfile.mkstemp(prefix="stormpad-paste-", suffix=".png")
+        os.close(handle)
+        target = Path(name)
+        if not encoded.writeToFile_atomically_(str(target), True):
+            target.unlink(missing_ok=True)
+            return None
+        return target
+
+    @objc.python_method
+    def _insert_pasted_images(self, sources: list[Path]) -> bool:
+        """Import pasted images and insert them as one undoable edit."""
+        created: list[Block] = []
+        for source in sources:
+            try:
+                block = self._on_attachment(BlockType.IMAGE.value, source)
+            finally:
+                if source.name.startswith("stormpad-paste-"):
+                    source.unlink(missing_ok=True)
+            if block is not None:
+                created.append(block)
+        if not created:
+            return False
+        blocks = self._extract_blocks()
+        index = min(self._current_block_index(), max(0, len(blocks) - 1))
+        destination = index
+        for offset, block in enumerate(created):
+            blocks, destination = apply_block_command(
+                blocks, destination if offset else index, block
+            )
+        self._replace_document(blocks, register_undo=True, focus_index=destination)
+        self._selected_image_indexes = {
+            position
+            for position, block in enumerate(blocks)
+            if block.kind == BlockType.IMAGE and block in created
+        }
+        self._refresh_image_selection_chrome()
+        self.flash_status(
+            f"{len(created)} image{'s' if len(created) != 1 else ''} added"
+        )
+        return True
+
+    @objc.python_method
     def handle_paste(self, pasteboard) -> bool:
         """Replace the selection with sanitized pasted content, as one edit."""
+        sources = self._pasted_image_sources(pasteboard)
+        if sources and self._insert_pasted_images(sources):
+            return True
         runs = self._pasted_runs(pasteboard)
         if not runs:
             return False
@@ -3046,9 +3445,15 @@ class Editor(NSObject):
         if command == "selectAll:":
             self.select_all_note_content()
             return True
+        if command == "cancelOperation:" and self._selected_image_indexes:
+            self.clear_image_selection()
+            return True
         if command in ("deleteBackward:", "deleteForward:", "delete:"):
             if self._full_note_selected:
                 self.clear_note_content()
+                return True
+            if len(self._selected_image_indexes) > 1:
+                self.delete_selected_images()
                 return True
             if self._selected_image_index is not None:
                 self._remove_attachment_at_index(self._selected_image_index)
@@ -3141,6 +3546,31 @@ class Editor(NSObject):
                 self._body.setSelectedRange_(NSMakeRange(int(index), 1))
                 self._body.setNeedsDisplay_(True)
             menu.addItem_(NSMenuItem.separatorItem())
+            if kind == BlockType.IMAGE.value:
+                multiple = len(self._selected_image_indexes) > 1
+                entries = [
+                    ("Align Left Edges" if multiple else "Align Left", "alignImageLeft:"),
+                    (
+                        "Align Horizontal Centers" if multiple else "Align Center",
+                        "alignImageCenter:",
+                    ),
+                    ("Align Right Edges" if multiple else "Align Right", "alignImageRight:"),
+                ]
+                if multiple:
+                    entries.append(("Match Width", "matchImageWidths:"))
+                entries.append(
+                    ("Fit All to Column" if multiple else "Fit to Column", "fitImageToColumn:")
+                )
+                entries.append(("Reset Size", "resetImageSize:"))
+                for title, action in entries:
+                    item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+                        title, action, ""
+                    )
+                    item.setTarget_(self)
+                    item.setToolTip_(title)
+                    item.setAccessibilityLabel_(title)
+                    menu.addItem_(item)
+                menu.addItem_(NSMenuItem.separatorItem())
             open_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
                 "Open" if kind == BlockType.IMAGE.value else "Open Managed File",
                 "openAttachment:",
@@ -3346,6 +3776,32 @@ class Editor(NSObject):
             self._current.id,
         )
         return resolved, target
+
+    # -- image command actions --------------------------------------------------
+
+    @objc.IBAction
+    def alignImageLeft_(self, sender):  # noqa: N802
+        self.align_selected_images("left")
+
+    @objc.IBAction
+    def alignImageCenter_(self, sender):  # noqa: N802
+        self.align_selected_images("center")
+
+    @objc.IBAction
+    def alignImageRight_(self, sender):  # noqa: N802
+        self.align_selected_images("right")
+
+    @objc.IBAction
+    def matchImageWidths_(self, sender):  # noqa: N802
+        self.match_selected_image_widths()
+
+    @objc.IBAction
+    def fitImageToColumn_(self, sender):  # noqa: N802
+        self.fit_selected_images_to_column()
+
+    @objc.IBAction
+    def resetImageSize_(self, sender):  # noqa: N802
+        self.reset_selected_images_to_natural_size()
 
     @objc.IBAction
     def openAttachment_(self, sender):  # noqa: N802

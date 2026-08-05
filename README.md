@@ -37,6 +37,8 @@ without an account or service dependency.
   note.
 - Collapsible Toggle Lists and Toggle Headings keep long notes easy to scan
   without removing content.
+- Paste images directly into notes, resize them from native selection handles,
+  and align one or several images within the editor.
 - Projects, pinned notes, global search, and categories keep ideas organized.
 - A block-based editor supports prose, to-dos, lists, headings, quotes, links,
   images, and files.
@@ -75,6 +77,7 @@ Only follow these steps when StormPad was downloaded from the
 - Pinned notes, global search, categories, and project icons
 - Block-based editing with to-dos, lists, headings, quotes, links, images, and files
 - Collapsible Toggle Lists and Toggle Headings
+- Image paste, native resize handles, and left/center/right image alignment
 - Bold, italic, underline, semantic text colors, and highlights
 - Native undo and redo, autosave, export, Finder actions, and Speak Selection
 - Note and Project sharing through native macOS services
