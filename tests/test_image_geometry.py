@@ -291,3 +291,100 @@ def test_geometry_survives_a_width_change(editor):
     assert abs(float(rect.size.width) - 240.0) <= 1.0
     ratio = float(rect.size.width) / float(rect.size.height)
     assert abs(ratio - (WIDE_W / WIDE_H)) < 0.02
+
+
+# --- geometry-first hit testing -------------------------------------------------
+#
+# characterIndexForInsertionAtPoint_ returns an *insertion* index, so anywhere
+# right of the attachment glyph's midpoint it reports the following character.
+# Hit testing that relied on it therefore failed across the entire right half of
+# every image, taking the right-hand resize handles with it. These pin the
+# geometry-based replacement.
+
+
+def test_image_interior_is_hit_across_its_full_width(editor):
+    index = _attachment_index(editor)
+    rect = editor.actual_image_rect(index)
+    for fraction in (0.1, 0.3, 0.5, 0.7, 0.9):
+        point = NSMakePoint(
+            float(rect.origin.x) + float(rect.size.width) * fraction,
+            float(rect.origin.y) + float(rect.size.height) / 2.0,
+        )
+        assert editor.image_hit_test(point) is not None, f"missed at {fraction:.0%} width"
+
+
+def test_the_right_half_of_an_image_resolves_to_the_wrong_character_index(editor):
+    """Documents the underlying AppKit behaviour the hit test works around."""
+    index = _attachment_index(editor)
+    rect = editor.actual_image_rect(index)
+    right_of_middle = NSMakePoint(
+        float(rect.origin.x) + float(rect.size.width) * 0.9,
+        float(rect.origin.y) + float(rect.size.height) / 2.0,
+    )
+    reported = int(editor._body.characterIndexForInsertionAtPoint_(right_of_middle))
+
+    assert reported != index, "insertion index no longer drifts; the workaround may be removable"
+    # Geometry still finds the image despite the drifting index.
+    assert editor.image_hit_test(right_of_middle) is not None
+
+
+@pytest.mark.parametrize(
+    "edge",
+    ["top_left", "top_right", "bottom_left", "bottom_right", "left", "right"],
+)
+def test_every_handle_is_reachable_through_hit_testing(editor, edge):
+    index = _attachment_index(editor)
+    cell = _cell(editor, index)
+    rect = editor.actual_image_rect(index)
+    handle = cell.handle_rects(rect)[edge]
+    centre = NSMakePoint(
+        float(handle.origin.x) + float(handle.size.width) / 2.0,
+        float(handle.origin.y) + float(handle.size.height) / 2.0,
+    )
+
+    hit = editor.image_hit_test(centre)
+    assert hit is not None
+    assert hit[4] == edge, "handle must report its own edge, not an interior hit"
+
+
+def test_interior_hit_reports_no_edge_so_it_will_not_resize(editor):
+    index = _attachment_index(editor)
+    rect = editor.actual_image_rect(index)
+    centre = NSMakePoint(
+        float(rect.origin.x) + float(rect.size.width) / 2.0,
+        float(rect.origin.y) + float(rect.size.height) / 2.0,
+    )
+
+    hit = editor.image_hit_test(centre)
+    assert hit is not None
+    assert hit[4] is None
+
+
+def test_points_outside_every_image_are_not_hits(editor):
+    index = _attachment_index(editor)
+    rect = editor.actual_image_rect(index)
+    far_below = NSMakePoint(
+        float(rect.origin.x) + float(rect.size.width) / 2.0,
+        float(rect.origin.y) + float(rect.size.height) + 120.0,
+    )
+
+    assert editor.image_hit_test(far_below) is None
+
+
+def test_hidden_images_are_not_hit_targets(editor):
+    """A collapsed toggle must make its image unreachable by the mouse."""
+    index = _attachment_index(editor)
+    rect = editor.actual_image_rect(index)
+    centre = NSMakePoint(
+        float(rect.origin.x) + float(rect.size.width) / 2.0,
+        float(rect.origin.y) + float(rect.size.height) / 2.0,
+    )
+    assert editor.image_hit_test(centre) is not None
+
+    # Hidden blocks are excluded from the selectable set the hit test walks.
+    original = editor._selectable_image_indexes
+    editor._selectable_image_indexes = lambda: []
+    try:
+        assert editor.image_hit_test(centre) is None
+    finally:
+        editor._selectable_image_indexes = original

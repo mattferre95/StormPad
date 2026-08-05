@@ -236,6 +236,14 @@ def _within_hit_area(point, rect, minimum: float) -> bool:
 
 
 
+
+def _point_in_rect(point, rect) -> bool:
+    return (
+        float(rect.origin.x) <= float(point.x) <= float(rect.origin.x) + float(rect.size.width)
+        and float(rect.origin.y) <= float(point.y) <= float(rect.origin.y) + float(rect.size.height)
+    )
+
+
 def _resize_edge_at(point, bitmap, cell):
     """Which resize edge a click lands on, or ``None`` for the image interior.
 
@@ -608,6 +616,32 @@ class BlockTextView(NSTextView):
         editor = getattr(self, "stormpad_editor", None)
         if editor is not None:
             point = self.convertPoint_fromView_(event.locationInWindow(), None)
+            # Geometry first: an image owns the pixels it actually covers,
+            # independent of how AppKit resolves a character index there.
+            hit = editor.image_hit_test(point)
+            if hit is not None:
+                block_index, character_index, _rect, cell, edge = hit
+                modifiers = int(event.modifierFlags())
+                editor.select_image_block(
+                    block_index,
+                    command=bool(modifiers & NSEventModifierFlagCommand),
+                    shift=bool(modifiers & NSEventModifierFlagShift),
+                )
+                # Object selection, never a text selection: a selected
+                # attachment character makes AppKit paint its own highlight
+                # across the line fragment and raises the text toolbar.
+                self.setSelectedRange_(NSMakeRange(character_index, 0))
+                self.setNeedsDisplay_(True)
+                if edge is not None:
+                    self._image_resize = (
+                        block_index,
+                        character_index,
+                        float(point.x),
+                        float(cell.display_width),
+                        cell,
+                        edge,
+                    )
+                return
             try:
                 index = self.characterIndexForInsertionAtPoint_(point)
                 index = min(int(index), max(0, int(self.textStorage().length()) - 1))
@@ -1836,6 +1870,41 @@ class Editor(NSObject):
             width,
             height,
         )
+
+    @objc.python_method
+    def image_hit_test(self, point):
+        """Find the image under a point using real geometry, not text indexes.
+
+        ``characterIndexForInsertionAtPoint_`` returns an *insertion* index, so
+        anywhere right of a glyph's midpoint it reports the following character.
+        For an attachment that meant the whole right half of every image, and the
+        right-hand resize handles with it, resolved to something that was not the
+        image at all. Testing the bitmap rectangle directly is both correct and
+        what the user sees.
+
+        Returns ``(block_index, character_index, rect, cell, edge)`` where
+        ``edge`` is ``None`` for a click in the image interior.
+        """
+        for block_index in self._selectable_image_indexes():
+            character_index = self._image_character_index(block_index)
+            if character_index is None:
+                continue
+            rect = self.actual_image_rect(character_index)
+            if rect is None:
+                continue
+            attrs = self._body.textStorage().attributesAtIndex_effectiveRange_(
+                character_index, None
+            )[0]
+            attachment = attrs.get(NSAttachmentAttributeName)
+            cell = attachment.attachmentCell() if attachment is not None else None
+            if cell is None or not hasattr(cell, "handle_rects"):
+                continue
+            edge = _resize_edge_at(point, rect, cell)
+            if edge is not None:
+                return (block_index, character_index, rect, cell, edge)
+            if _point_in_rect(point, rect):
+                return (block_index, character_index, rect, cell, None)
+        return None
 
     @objc.python_method
     def _image_character_index(self, block_index: int) -> int | None:
