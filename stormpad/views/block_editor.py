@@ -166,6 +166,7 @@ _IMAGE_MIN_WIDTH = 96.0
 _IMAGE_DEFAULT_MAX_WIDTH = 520.0
 _IMAGE_HANDLE_SIZE = 10.0
 _IMAGE_HANDLE_HIT = 22.0
+_IMAGE_EDGE_BAND = 8.0
 _IMAGE_ALIGNMENT_MAP = {
     "left": NSTextAlignmentLeft,
     "center": NSTextAlignmentCenter,
@@ -234,6 +235,29 @@ def _within_hit_area(point, rect, minimum: float) -> bool:
     )
 
 
+
+def _resize_edge_at(point, bitmap, cell):
+    """Which resize edge a click lands on, or ``None`` for the image interior.
+
+    Handles win, then a forgiving band along the left and right borders, so the
+    user never has to hit the small square exactly. The interior is deliberately
+    excluded: dragging there moves the image rather than resizing it.
+    """
+    for edge, rect in cell.handle_rects(bitmap).items():
+        if _within_hit_area(point, rect, _IMAGE_HANDLE_HIT):
+            return edge
+    x, y = float(point.x), float(point.y)
+    left, right = float(bitmap.origin.x), float(bitmap.origin.x + bitmap.size.width)
+    top, bottom = float(bitmap.origin.y), float(bitmap.origin.y + bitmap.size.height)
+    if not (top - _IMAGE_EDGE_BAND <= y <= bottom + _IMAGE_EDGE_BAND):
+        return None
+    if abs(x - left) <= _IMAGE_EDGE_BAND:
+        return "left"
+    if abs(x - right) <= _IMAGE_EDGE_BAND:
+        return "right"
+    return None
+
+
 class ImageAttachmentCell(NSTextAttachmentCell):
     """Width-aware image cell with a restrained selection outline and handle."""
 
@@ -286,6 +310,8 @@ class ImageAttachmentCell(NSTextAttachmentCell):
         editor = getattr(self, "editor", None)
         if editor is None or self.block_index not in editor._selected_image_indexes:
             return
+        # `frame` is already the cell's own rectangle, which is the bitmap, so the
+        # chrome hugs the image rather than the taller line fragment.
         palette = editor._palette
         # Theme tokens only, so the chrome stays readable on every theme and
         # never bakes a colour into the image itself.
@@ -626,40 +652,29 @@ class BlockTextView(NSTextView):
                         command=bool(modifiers & NSEventModifierFlagCommand),
                         shift=bool(modifiers & NSEventModifierFlagShift),
                     )
-                    self.setSelectedRange_(NSMakeRange(index, 1))
+                    # Object selection, not text selection. A selected
+                    # attachment character makes AppKit paint its own highlight
+                    # across the whole line fragment, which is the tall blue band
+                    # above the bitmap, and it also raises the text formatting
+                    # toolbar. Collapsing to a caret avoids both.
+                    self.setSelectedRange_(NSMakeRange(index, 0))
                     self.setNeedsDisplay_(True)
                     attachment = attrs.get(NSAttachmentAttributeName)
                     cell = attachment.attachmentCell() if attachment is not None else None
-                    if cell is not None and hasattr(cell, "handle_rects"):
-                        layout = self.layoutManager()
-                        glyph = layout.glyphRangeForCharacterRange_actualCharacterRange_(
-                            NSMakeRange(index, 1), None
-                        )
-                        if isinstance(glyph, tuple):
-                            glyph = glyph[0]
-                        frame = layout.boundingRectForGlyphRange_inTextContainer_(
-                            glyph, self.textContainer()
-                        )
-                        inset = self.textContainerInset()
-                        shifted = NSMakeRect(
-                            float(frame.origin.x + inset.width),
-                            float(frame.origin.y + inset.height),
-                            float(frame.size.width),
-                            float(frame.size.height),
-                        )
-                        # Generous hit areas: every handle answers to at least
-                        # _IMAGE_HANDLE_HIT points so they are easy to grab.
-                        for edge, rect in cell.handle_rects(shifted).items():
-                            if _within_hit_area(point, rect, _IMAGE_HANDLE_HIT):
-                                self._image_resize = (
-                                    block_index,
-                                    index,
-                                    float(point.x),
-                                    float(cell.display_width),
-                                    cell,
-                                    edge,
-                                )
-                                break
+                    bitmap = editor.actual_image_rect(index)
+                    if cell is not None and bitmap is not None and hasattr(cell, "handle_rects"):
+                        # Handles and edges come from the real bitmap rectangle,
+                        # so a click lands where the user actually sees them.
+                        edge = _resize_edge_at(point, bitmap, cell)
+                        if edge is not None:
+                            self._image_resize = (
+                                block_index,
+                                index,
+                                float(point.x),
+                                float(cell.display_width),
+                                cell,
+                                edge,
+                            )
                     return
                 editor.clear_image_selection()
                 if attrs.get(_ATTR_DECORATION) == "todo":
@@ -1290,9 +1305,9 @@ class Editor(NSObject):
                     NSMakeRange(0, image_string.length()),
                 )
                 result.appendAttributedString_(image_string)
-                result.appendAttributedString_(
-                    NSAttributedString.alloc().initWithString_attributes_("  ", attrs)
-                )
+                # The alt text is metadata, not a caption: rendering it after the
+                # attachment put stray words beside the image on the same line.
+                return result
 
         for run in block.runs:
             run_attrs = self._inline_attributes(attrs, run)
@@ -1380,7 +1395,12 @@ class Editor(NSObject):
 
     def _block_base_attributes(self, block: Block) -> dict:
         paragraph = NSMutableParagraphStyle.alloc().init()
-        paragraph.setLineHeightMultiple_(1.35)
+        # An image line must hug its bitmap. A line height multiple inflates the
+        # fragment to 135% of the attachment height, and because the attachment
+        # is baseline anchored every extra point lands above the image, which is
+        # what produced the tall empty selection band.
+        if block.kind != BlockType.IMAGE:
+            paragraph.setLineHeightMultiple_(1.35)
         paragraph.setParagraphSpacingBefore_(3.0)
         paragraph.setParagraphSpacing_(12.0)
         paragraph.setHeadIndent_(float(block.indent) * 20.0)
@@ -1769,6 +1789,70 @@ class Editor(NSObject):
         else:
             self._selected_image_indexes = {int(value)}
             self._image_anchor = int(value)
+
+    @objc.python_method
+    def actual_image_rect(self, character_index: int):
+        """The rendered bitmap's rectangle in text view coordinates.
+
+        The single source of truth for the selection border, the handles, hit
+        testing, and any anchoring. Derived from the line fragment origin plus
+        the glyph location, then lifted by the cell height because an attachment
+        sits on the baseline. Never the line fragment itself, which is taller
+        than the bitmap.
+        """
+        storage = self._body.textStorage()
+        if storage.length() == 0 or not (0 <= character_index < storage.length()):
+            return None
+        attrs = storage.attributesAtIndex_effectiveRange_(character_index, None)[0]
+        attachment = attrs.get(NSAttachmentAttributeName)
+        cell = attachment.attachmentCell() if attachment is not None else None
+        if cell is None:
+            return None
+        manager = self._body.layoutManager()
+        container = self._body.textContainer()
+        if manager is None or container is None:
+            return None
+        try:
+            glyphs = manager.glyphRangeForCharacterRange_actualCharacterRange_(
+                NSMakeRange(character_index, 1), None
+            )
+            if isinstance(glyphs, tuple):
+                glyphs = glyphs[0]
+            fragment = manager.lineFragmentRectForGlyphAtIndex_effectiveRange_(
+                glyphs.location, None
+            )
+            if isinstance(fragment, tuple):
+                fragment = fragment[0]
+            location = manager.locationForGlyphAtIndex_(glyphs.location)
+            size = cell.cellSize()
+        except (AttributeError, IndexError, TypeError, ValueError):
+            return None
+        inset = self._body.textContainerInset()
+        width = float(size.width if hasattr(size, "width") else size[0])
+        height = float(size.height if hasattr(size, "height") else size[1])
+        return NSMakeRect(
+            float(fragment.origin.x) + float(location.x) + float(inset.width),
+            float(fragment.origin.y) + float(location.y) - height + float(inset.height),
+            width,
+            height,
+        )
+
+    @objc.python_method
+    def _image_character_index(self, block_index: int) -> int | None:
+        """Character index of the attachment glyph for a given image block."""
+        lines = str(self._body.string()).split("\n")
+        if not (0 <= block_index < len(lines)):
+            return None
+        start = sum(_utf16_length(line) + 1 for line in lines[:block_index])
+        storage = self._body.textStorage()
+        for offset in range(len(lines[block_index])):
+            probe = start + offset
+            if probe >= storage.length():
+                break
+            attrs = storage.attributesAtIndex_effectiveRange_(probe, None)[0]
+            if attrs.get(NSAttachmentAttributeName) is not None:
+                return probe
+        return None
 
     @objc.python_method
     def _selectable_image_indexes(self) -> list[int]:
