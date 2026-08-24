@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+# Strip Claude attribution trailers and footers from commit messages.
+#
+# Matches any case, any model variant ("Claude", "Claude Opus 5", ...), and any
+# address, so a changed default template cannot reintroduce them. Also removes
+# the "Generated with [Claude Code]" footer in both its plain and emoji forms.
+set -euo pipefail
+
+message_file="$1"
+[ -f "$message_file" ] || exit 0
+
+tmp="$(mktemp)"
+trap 'rm -f "$tmp"' EXIT
+
+grep -viE \
+  -e '^[[:space:]]*co-authored-by:[[:space:]]*claude' \
+  -e '^[[:space:]]*(🤖[[:space:]]*)?generated with \[?claude code\]?' \
+  "$message_file" > "$tmp" || true
+
+# Collapse any trailing blank lines the removal left behind.
+printf '%s\n' "$(cat "$tmp")" > "$message_file"
